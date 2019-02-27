@@ -11,8 +11,10 @@ from pytorchure.utils import thumb_grid, animate_gif
 
 
 def listify(item, length):
-    if not isinstance(item, list):
+    if not (isinstance(item, tuple) or isinstance(item, list)):
         return [item] * length
+    else:
+        return item
 
 
 class DCDiscriminator(nn.Module):
@@ -122,4 +124,3 @@ class DCDiscriminator(nn.Module):
         for i in range(self.n_fc):
             x = self.fc[i](x)
         x = self.out(x)
-
