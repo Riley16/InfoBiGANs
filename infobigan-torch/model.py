@@ -123,4 +123,89 @@ class DCDiscriminator(nn.Module):
         x = x.view(-1, self.final_conv_dim)
         for i in range(self.n_fc):
             x = self.fc[i](x)
-        x = self.out(x)
+        return self.out(x)
+
+
+class DCGenerator(nn.Module):
+    """
+    Deep convolutional generator network.
+
+    Attributes
+    ----------
+    n_conv: int
+        Total number of hidden transpose-convolutional (deconvolutional)
+        layers.
+    initial_deconv_dim: tuple
+        Dimensionality of the initial deconvolutional layer.
+    """
+    def __init__(self,
+                 channels=(1024, 512, 256, 128, 1),
+                 kernel_size=4,
+                 stride=2,
+                 padding=1,
+                 bias=False,
+                 latent_dim=100):
+        """Initialise a deep convolutional generator.
+
+        Parameters
+        ----------
+        channels: tuple
+            Tuple denoting number of channels in each deconvolutional layer.
+        kernel_size: int or tuple
+            Side length of convolutional kernel.
+        stride: int or tuple
+            Convolutional stride.
+        padding: int or tuple
+            Padding to be applied to the image during convolution.
+        bias: bool or tuple
+            Indicates whether each convolutional filter includes bias terms
+            for each unit.
+        latent_dim: int
+            Number of latent features that the generator samples. (This is the
+            number of input features.)
+
+        If any of `kernel_size`, `stride`, `padding`, or `bias` is a tuple,
+        it should be exactly as long as `channels`; in this case, the ith item
+        denotes the parameter value for the ith convolutional layer.
+        """
+        super(DCGenerator, self).__init__()
+        self.n_conv = len(channels) + 1
+
+        kernel_size = listify(kernel_size, self.n_conv)
+        padding = listify(padding, self.n_conv)
+        stride = listify(stride, self.n_conv)
+        bias = listify(bias, self.n_conv)
+        self.initial_deconv_dim = (
+            channels[0], kernel_size[0], kernel_size[0])
+
+        self.fc = nn.Linear(latent_dim, channels[0] * (kernel_size[0]**2))
+        self.conv = nn.ModuleList()
+        for i, (r, s) in enumerate(zip(channels[1:-1], channels[:-2])):
+            self.conv.append(nn.Sequential(
+                nn.ConvTranspose2d(
+                    in_channels=s,
+                    out_channels=r,
+                    kernel_size=kernel_size[i],
+                    stride=stride[i],
+                    padding=padding[i],
+                    bias=bias[i]
+                ),
+                nn.BatchNorm2d(r),
+                nn.ReLU(inplace=True)
+            ))
+        self.conv.append(nn.ConvTranspose2d(
+            in_channels=channels[-2],
+            out_channels=channels[-1],
+            kernel_size=kernel_size[-1],
+            stride=stride[-1],
+            padding=padding[-1],
+            bias=bias[-1]
+        ))
+        self.out = nn.Tanh()
+
+    def forward(self, z):
+        z = self.fc(z)
+        z = z.view(-1, *self.initial_deconv_dim)
+        for i in range(self.n_conv):
+            z = self.conv[i](z)
+        return self.out(z)
