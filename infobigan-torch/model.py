@@ -5,9 +5,9 @@
 Information maximising adversarially learned inference (InfoBiGAN)
 """
 import torch
-from torch import nn, optim
-from pytorchure.train.trainer import Trainer
-from pytorchure.utils import thumb_grid, animate_gif
+from torch import nn #, optim
+#from pytorchure.train.trainer import Trainer
+#from pytorchure.utils import thumb_grid, animate_gif
 
 
 def _listify(item, length):
@@ -24,11 +24,75 @@ class InfoBiGAN(object):
     Attributes
     ----------
     discriminator: DCNetwork
+        InfoBiGAN's discriminator network, which is presented a set of
+        latent space-manifest space pairs and determines whether each
+        pair was produced by the encoder or the generator.
     generator: DCTranspose
+        InfoBiGAN's generator network, which learns the underlying
+        distribution of a dataset through a minimax game played against the
+        discriminator.
     encoder: DCNetwork
-    regularisation: QLayer
+        InfoBiGAN's inferential network, which learns the latent space
+        encodings of a dataset through a minimax game played against the
+        discriminator.
+    regulariser: QLayer
+        . . . Not yet implemented . . .
     latent_dim: int
+        Dimensionality of the latent space. Currently, this is basically a
+        vanilla BiGAN, so this only includes noise.
     """
+    def __init__(self,
+                 channels=(1, 128, 256, 512, 1024),
+                 kernel_size=4,
+                 stride=2,
+                 padding=1,
+                 bias=False,
+                 latent_dim=100):
+        """Initialise an information maximising adversarially learned
+        inference network (InfoBiGAN).
+
+        Parameters
+        ----------
+        channels: tuple
+        kernel_size: int or tuple
+        stride: int or tuple
+        padding: int or tuple
+        bias: bool or tuple
+        latent_dim: int
+            Number of latent features that the generator network samples.
+        """
+        n_conv = len(channels) + 1
+        kernel_size = _listify(kernel_size, n_conv)
+        padding = _listify(padding, n_conv)
+        stride = _listify(stride, n_conv)
+        bias = _listify(bias, n_conv)
+
+        self.discriminator = DCNetwork(
+            channels=channels, kernel_size=kernel_size, stride=stride,
+            padding=padding, bias=bias, n_out=1)
+        self.encoder = DCNetwork(
+            channels=channels, kernel_size=kernel_size, stride=stride,
+            padding=padding, bias=bias, n_out=latent_dim)
+        self.generator = DCTranspose(
+            channels=channels[::-1], kernel_size=kernel_size[::-1],
+            stride=stride[::-1], padding=padding[::-1], bias=bias[::-1],
+            latent_dim=latent_dim)
+        self.latent_dim = latent_dim
+
+    def train(self):
+        self.discriminator.train()
+        self.generator.train()
+        self.encoder.train()
+
+    def eval(self):
+        self.discriminator.eval()
+        self.generator.eval()
+        self.encoder.eval()
+
+    def load_state_dict(self, params_d, params_g, params_e):
+        self.discriminator.load_state_dict(params_d)
+        self.generator.load_state_dict(params_g)
+        self.encoder.load_state_dict(params_e)
 
 
 class DCNetwork(nn.Module):
