@@ -51,15 +51,37 @@ class InfoBiGAN(object):
         """Initialise an information maximising adversarially learned
         inference network (InfoBiGAN).
 
+        Parameters are ordered according to the convolutional networks
+        (discriminator and encoder). For instance, the second channel
+        parameter denotes the number of channels in the second convolutional
+        layer. The transpose-convolutional network (generator) currently
+        uses an inverse architecture, so that the same parameter denotes the
+        number of channels in its second-to-last deconvolutional layer.
+
+        Currently, the encoder and discriminator are initialised with the
+        same base architecture; however, the discriminator has a single output
+        unit while the encoder has a number of output units equal to the
+        dimensionality of the latent space.
+
         Parameters
         ----------
         channels: tuple
+            Tuple denoting number of channels in each convolutional layer.
         kernel_size: int or tuple
+            Side length of convolutional kernel.
         stride: int or tuple
+            Convolutional stride.
         padding: int or tuple
+            Padding to be applied to the image during convolution.
         bias: bool or tuple
+            Indicates whether each convolutional filter includes bias terms
+            for each unit.
         latent_dim: int
             Number of latent features that the generator network samples.
+
+        If any of `kernel_size`, `stride`, `padding`, or `bias` is a tuple,
+        it should be exactly as long as `channels`; in this case, the ith item
+        denotes the parameter value for the ith convolutional layer.
         """
         n_conv = len(channels) + 1
         kernel_size = _listify(kernel_size, n_conv)
