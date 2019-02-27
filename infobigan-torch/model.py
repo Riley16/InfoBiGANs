@@ -17,9 +17,23 @@ def _listify(item, length):
         return item
 
 
-class DCDiscriminator(nn.Module):
+class InfoBiGAN(object):
+    """An information maximising adversarially learned inference network
+    (InfoBiGAN).
+
+    Attributes
+    ----------
+    discriminator: DCNetwork
+    generator: DCTranspose
+    encoder: DCNetwork
+    regularisation: QLayer
+    latent_dim: int
     """
-    Deep convolutional discriminator network.
+
+
+class DCNetwork(nn.Module):
+    """
+    Deep convolutional network.
 
     Attributes
     ----------
@@ -35,8 +49,9 @@ class DCDiscriminator(nn.Module):
                  stride=2,
                  padding=1,
                  bias=False,
-                 leak=0.2):
-        """Initialise a deep convolutional discriminator.
+                 leak=0.2,
+                 n_out=1):
+        """Initialise a deep convolutional network.
 
         Parameters
         ----------
@@ -60,17 +75,19 @@ class DCDiscriminator(nn.Module):
         leak: float
             Slope of the negative part of the hidden layers' leaky ReLU
             activation function.
+        n_out: int
+            Number of output units. Set to 1 for discriminator behaviour.
+            Set to any other value for general ConvNet behaviour.
 
         If any of `kernel_size`, `stride`, `padding`, or `bias` is a tuple,
         it should be exactly as long as `channels`; in this case, the ith item
         denotes the parameter value for the ith convolutional layer.
         """
-        super(DCDiscriminator, self).__init__()
+        super(DCNetwork, self).__init__()
         self.n_conv = len(channels) + 1
         self.n_fc = len(fc)
         self.conv = nn.ModuleList()
         self.fc = nn.ModuleList()
-        n_out=1
 
         kernel_size = _listify(kernel_size, self.n_conv)
         padding = _listify(padding, self.n_conv)
@@ -124,7 +141,7 @@ class DCDiscriminator(nn.Module):
         return self.out(x)
 
 
-class DCGenerator(nn.Module):
+class DCTranspose(nn.Module):
     """
     Deep convolutional generator network.
 
@@ -164,7 +181,7 @@ class DCGenerator(nn.Module):
         it should be exactly as long as `channels`; in this case, the ith item
         denotes the parameter value for the ith convolutional layer.
         """
-        super(DCGenerator, self).__init__()
+        super(DCTranspose, self).__init__()
         self.n_conv = len(channels) + 1
 
         kernel_size = _listify(kernel_size, self.n_conv)
