@@ -10,7 +10,7 @@ from pytorchure.train.trainer import Trainer
 from pytorchure.utils import thumb_grid, animate_gif
 
 
-def listify(item, length):
+def _listify(item, length):
     if not (isinstance(item, tuple) or isinstance(item, list)):
         return [item] * length
     else:
@@ -27,8 +27,6 @@ class DCDiscriminator(nn.Module):
         Number of hidden convolutional layers.
     n_fc: int
         Number of hidden fully connected layers.
-    final_conv_dim
-        Total number of units in the final convolutional layer.
     """
     def __init__(self,
                  channels=(1, 128, 256, 512, 1024),
@@ -74,10 +72,10 @@ class DCDiscriminator(nn.Module):
         self.fc = nn.ModuleList()
         n_out=1
 
-        kernel_size = listify(kernel_size, self.n_conv)
-        padding = listify(padding, self.n_conv)
-        stride = listify(stride, self.n_conv)
-        bias = listify(bias, self.n_conv)
+        kernel_size = _listify(kernel_size, self.n_conv)
+        padding = _listify(padding, self.n_conv)
+        stride = _listify(stride, self.n_conv)
+        bias = _listify(bias, self.n_conv)
 
         self.conv.append(nn.Sequential(
             nn.Conv2d(
@@ -104,8 +102,8 @@ class DCDiscriminator(nn.Module):
                 nn.BatchNorm2d(r),
                 nn.LeakyReLU(negative_slope=leak, inplace=True)
             ))
-        self.final_conv_dim = r * (kernel_size[j] ** 2)
-        r = self.final_conv_dim
+        self._final_conv_dim = r * (kernel_size[j] ** 2)
+        r = self._final_conv_dim
         for i, (r, s) in enumerate(zip(fc[1:], fc[:-1])):
             self.fc.append(nn.Sequential(
                 nn.Linear(s, r),
@@ -120,7 +118,7 @@ class DCDiscriminator(nn.Module):
     def forward(self, x):
         for i in range(self.n_conv):
             x = self.conv[i](x)
-        x = x.view(-1, self.final_conv_dim)
+        x = x.view(-1, self._final_conv_dim)
         for i in range(self.n_fc):
             x = self.fc[i](x)
         return self.out(x)
@@ -135,8 +133,6 @@ class DCGenerator(nn.Module):
     n_conv: int
         Total number of hidden transpose-convolutional (deconvolutional)
         layers.
-    initial_deconv_dim: tuple
-        Dimensionality of the initial deconvolutional layer.
     """
     def __init__(self,
                  channels=(1024, 512, 256, 128, 1),
@@ -171,11 +167,11 @@ class DCGenerator(nn.Module):
         super(DCGenerator, self).__init__()
         self.n_conv = len(channels) + 1
 
-        kernel_size = listify(kernel_size, self.n_conv)
-        padding = listify(padding, self.n_conv)
-        stride = listify(stride, self.n_conv)
-        bias = listify(bias, self.n_conv)
-        self.initial_deconv_dim = (
+        kernel_size = _listify(kernel_size, self.n_conv)
+        padding = _listify(padding, self.n_conv)
+        stride = _listify(stride, self.n_conv)
+        bias = _listify(bias, self.n_conv)
+        self._initial_deconv_dim = (
             channels[0], kernel_size[0], kernel_size[0])
 
         self.fc = nn.Linear(latent_dim, channels[0] * (kernel_size[0]**2))
@@ -205,7 +201,7 @@ class DCGenerator(nn.Module):
 
     def forward(self, z):
         z = self.fc(z)
-        z = z.view(-1, *self.initial_deconv_dim)
+        z = z.view(-1, *self._initial_deconv_dim)
         for i in range(self.n_conv):
             z = self.conv[i](z)
         return self.out(z)
