@@ -14,7 +14,7 @@ def _listify(item, length):
     if not (isinstance(item, tuple) or isinstance(item, list)):
         return [item] * length
     else:
-        return item
+        return list(item)
 
 
 class InfoBiGAN(object):
@@ -117,9 +117,9 @@ class InfoBiGAN(object):
         self.encoder.load_state_dict(params_e)
 
 
-class DCNetwork(nn.Module):
+class DCArchitecture(nn.Module):
     """
-    Deep convolutional network.
+    Generalised deep convolutional network architecture.
 
     Attributes
     ----------
@@ -131,10 +131,10 @@ class DCNetwork(nn.Module):
                  transpose=False,
                  nonlinearity=('leaky', 'leaky', 'leaky', 'leaky', 'sigmoid'),
                  kernel_size=(4, 4, 4, 4, 1),
-                 batch_norm=(False, True, True, True, True),
-                 stride=2,
-                 padding=1,
-                 bias=False,
+                 batch_norm=(False, True, True, True, False),
+                 stride=(2, 2, 2, 2, 1),
+                 padding=(1, 1, 1, 1, 0),
+                 bias=(False, False, False, False, True),
                  leak=0.2):
         """Initialise a deep convolutional network.
 
@@ -175,8 +175,8 @@ class DCNetwork(nn.Module):
         the ith convolutional layer (mapping the ith index of channels to the
         (i + 1)th index of channels).
         """
-        super(DCNetwork, self).__init__()
-        self.n_conv = len(channels)
+        super(DCArchitecture, self).__init__()
+        self.n_conv = len(channels) - 1
         self.conv = nn.ModuleList()
 
         nonlinearity = _listify(nonlinearity, self.n_conv)
@@ -231,6 +231,84 @@ class DCNetwork(nn.Module):
         for i in range(self.n_conv):
             x = self.conv[i](x)
         return x
+
+
+class DCNetwork(DCArchitecture):
+    """
+    Deep convolutional network.
+
+    Attributes
+    ----------
+    n_conv: int
+        Number of hidden convolutional layers.
+    n_fc: int
+        Number of hidden fully connected layers.
+    """
+    def __init__(self,
+                 channels=(1, 128, 256, 512, 1024),
+                 fc=(),
+                 kernel_size=4,
+                 stride=2,
+                 padding=1,
+                 bias=False,
+                 leak=0.2,
+                 n_out=1):
+        """Initialise a deep convolutional network.
+
+        Parameters
+        ----------
+        channels: tuple
+            Tuple denoting number of channels in each convolutional layer.
+        fc: tuple
+            Tuple denoting number of hidden units in each fully connected
+            hidden layer. If fully connected hidden layers are used, then the
+            number of units in the first one should be set to the product of
+            the number of channels in the last convolutional layer and the
+            number of units in the last convolutional kernel.
+        kernel_size: int or tuple
+            Side length of convolutional kernel.
+        stride: int or tuple
+            Convolutional stride.
+        padding: int or tuple
+            Padding to be applied to the image during convolution.
+        bias: bool or tuple
+            Indicates whether each convolutional filter includes bias terms
+            for each unit.
+        leak: float
+            Slope of the negative part of the hidden layers' leaky ReLU
+            activation function.
+        n_out: int
+            Number of output units. Set to 1 for discriminator behaviour.
+            Set to any other value for general ConvNet behaviour.
+
+        If any of `kernel_size`, `stride`, `padding`, or `bias` is a tuple,
+        it should be exactly as long as `channels`; in this case, the ith item
+        denotes the parameter value for the ith convolutional layer.
+        """
+        n_conv = len(channels) - 1
+
+        fc = list(fc)
+        n_fc = len(fc) + 1
+
+        kernel_size = _listify(kernel_size, n_conv) + [1] * n_fc
+        channels = _listify(channels, n_conv) + fc + [n_out]
+        padding = _listify(padding, n_conv) + [0] * n_fc
+        stride = _listify(stride, n_conv) + [1] * n_fc
+        bias = _listify(bias, n_conv) + [True] * n_fc
+        nonlinearity = ['leaky'] * n_conv + ['sigmoid']
+        batch_norm = [False] + [True] * (n_conv - 1) + [False]
+
+        super(DCNetwork, self).__init__(
+            channels=channels,
+            kernel_size=kernel_size,
+            transpose=False,
+            nonlinearity=nonlinearity,
+            batch_norm=batch_norm,
+            stride=stride,
+            padding=padding,
+            bias=bias,
+            leak=leak
+        )
 
 
 class DCTranspose(nn.Module):
