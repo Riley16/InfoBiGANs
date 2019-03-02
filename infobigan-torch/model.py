@@ -6,6 +6,7 @@ Information maximising adversarially learned inference (InfoBiGAN)
 """
 import torch
 from torch import nn #, optim
+import numpy as np
 #from pytorchure.train.trainer import Trainer
 #from pytorchure.utils import thumb_grid, animate_gif
 
@@ -15,6 +16,21 @@ def _listify(item, length):
         return [item] * length
     else:
         return list(item)
+
+
+def _conv_out_size(input_size, kernels, strides, paddings):
+    """Get the output size of a convolutional stack with the specified
+    parameters.
+
+    TODO: Check how torch handles fractional dim outputs. I'm taking floor
+    here, which is probably wrong. (ceil was definitely wrong. Floor at least
+    seems to work. This would suggest that pytorch is automatically cropping
+    rather than automatically padding if there's a size mismatch.)
+    """
+    size = input_size
+    for k, s, p in zip(kernels, strides, paddings):
+        size = np.floor((size - k + 2 * p) / s + 1)
+    return int(size)
 
 
 class InfoBiGAN(object):
@@ -249,10 +265,11 @@ class DCNetwork(DCArchitecture):
                  fc=(),
                  kernel_size=4,
                  stride=2,
-                 padding=1,
+                 padding=(3, 1, 1, 1),
                  bias=False,
                  leak=0.2,
-                 n_out=1):
+                 dim_in=28,
+                 dim_out=1):
         """Initialise a deep convolutional network.
 
         Parameters
@@ -277,7 +294,11 @@ class DCNetwork(DCArchitecture):
         leak: float
             Slope of the negative part of the hidden layers' leaky ReLU
             activation function.
-        n_out: int
+        dim_in: int
+            Input pixel dimensionality. Currently assumes a square input.
+            This is the width or height of the input, not the number of
+            channels or the batch cardinality.
+        dim_out: int
             Number of output units. Set to 1 for discriminator behaviour.
             Set to any other value for general ConvNet behaviour.
 
@@ -289,14 +310,19 @@ class DCNetwork(DCArchitecture):
 
         fc = list(fc)
         n_fc = len(fc) + 1
+        conv_out_size = _conv_out_size(dim_in,
+                                       _listify(kernel_size, n_conv),
+                                       _listify(stride, n_conv),
+                                       _listify(padding, n_conv))
 
-        kernel_size = _listify(kernel_size, n_conv) + [1] * n_fc
-        channels = _listify(channels, n_conv) + fc + [n_out]
+        kernel_size = (_listify(kernel_size, n_conv) + [conv_out_size]
+                       + [1] * (n_fc - 1))
+        channels = _listify(channels, n_conv) + fc + [dim_out]
         padding = _listify(padding, n_conv) + [0] * n_fc
         stride = _listify(stride, n_conv) + [1] * n_fc
         bias = _listify(bias, n_conv) + [True] * n_fc
-        nonlinearity = ['leaky'] * n_conv + ['sigmoid']
-        batch_norm = [False] + [True] * (n_conv - 1) + [False]
+        nonlinearity = ['leaky'] * (n_conv + n_fc - 1) + ['sigmoid']
+        batch_norm = [False] + [True] * (n_conv + n_fc - 2) + [False]
 
         super(DCNetwork, self).__init__(
             channels=channels,
@@ -311,7 +337,7 @@ class DCNetwork(DCArchitecture):
         )
 
 
-class DCTranspose(nn.Module):
+class DCTranspose(DCArchitecture):
     """
     Deep convolutional generator network.
 
@@ -323,11 +349,13 @@ class DCTranspose(nn.Module):
     """
     def __init__(self,
                  channels=(1024, 512, 256, 128, 1),
+                 fc=(),
                  kernel_size=4,
                  stride=2,
-                 padding=1,
+                 padding=(1, 1, 1, 3),
                  bias=False,
-                 latent_dim=100):
+                 latent_dim=100,
+                 target_dim=28):
         """Initialise a deep convolutional generator.
 
         Parameters
@@ -351,44 +379,33 @@ class DCTranspose(nn.Module):
         it should be exactly as long as `channels`; in this case, the ith item
         denotes the parameter value for the ith convolutional layer.
         """
-        super(DCTranspose, self).__init__()
-        self.n_conv = len(channels) + 1
+        n_conv = len(channels) - 1
 
-        kernel_size = _listify(kernel_size, self.n_conv)
-        padding = _listify(padding, self.n_conv)
-        stride = _listify(stride, self.n_conv)
-        bias = _listify(bias, self.n_conv)
-        self._initial_deconv_dim = (
-            channels[0], kernel_size[0], kernel_size[0])
+        fc = list(fc)
+        n_fc = len(fc) + 1
+        conv_in_size = _conv_out_size(target_dim,
+                                      _listify(kernel_size, n_conv)[::-1],
+                                      _listify(stride, n_conv)[::-1],
+                                      _listify(padding, n_conv)[::-1])
 
-        self.fc = nn.Linear(latent_dim, channels[0] * (kernel_size[0]**2))
-        self.conv = nn.ModuleList()
-        for i, (r, s) in enumerate(zip(channels[1:-1], channels[:-2])):
-            self.conv.append(nn.Sequential(
-                nn.ConvTranspose2d(
-                    in_channels=s,
-                    out_channels=r,
-                    kernel_size=kernel_size[i],
-                    stride=stride[i],
-                    padding=padding[i],
-                    bias=bias[i]
-                ),
-                nn.BatchNorm2d(r),
-                nn.ReLU(inplace=True)
-            ))
-        self.conv.append(nn.ConvTranspose2d(
-            in_channels=channels[-2],
-            out_channels=channels[-1],
-            kernel_size=kernel_size[-1],
-            stride=stride[-1],
-            padding=padding[-1],
-            bias=bias[-1]
-        ))
-        self.out = nn.Tanh()
+        channels = [latent_dim] + fc + _listify(channels, n_conv)
+        kernel_size = ([1] * (n_fc - 1) + [conv_in_size]
+                       + _listify(kernel_size, n_conv))
+        padding = [conv_in_size - 1] * n_fc + _listify(padding, n_conv)
+        stride = [1] * n_fc + _listify(stride, n_conv)
+        nonlinearity = [None] + ['relu'] * (n_conv + n_fc - 2) + ['tanh']
+        transpose = [False] * n_fc + [True] * n_conv
+        bias = [True] * n_fc + _listify(bias, n_conv) + [False]
+        batch_norm = [False] + [True] * (n_conv + n_fc - 2) + [False]
 
-    def forward(self, z):
-        z = self.fc(z)
-        z = z.view(-1, *self._initial_deconv_dim)
-        for i in range(self.n_conv):
-            z = self.conv[i](z)
-        return self.out(z)
+        super(DCTranspose, self).__init__(
+            channels=channels,
+            kernel_size=kernel_size,
+            transpose=transpose,
+            nonlinearity=nonlinearity,
+            batch_norm=batch_norm,
+            stride=stride,
+            padding=padding,
+            bias=bias
+        )
+
