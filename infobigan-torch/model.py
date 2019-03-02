@@ -125,32 +125,38 @@ class DCNetwork(nn.Module):
     ----------
     n_conv: int
         Number of hidden convolutional layers.
-    n_fc: int
-        Number of hidden fully connected layers.
     """
     def __init__(self,
-                 channels=(1, 128, 256, 512, 1024),
-                 fc=(),
-                 kernel_size=4,
+                 channels=(1, 128, 256, 512, 1024, 1),
+                 transpose=False,
+                 nonlinearity=('leaky', 'leaky', 'leaky', 'leaky', 'sigmoid'),
+                 kernel_size=(4, 4, 4, 4, 1),
+                 batch_norm=(False, True, True, True, True),
                  stride=2,
                  padding=1,
                  bias=False,
-                 leak=0.2,
-                 n_out=1):
+                 leak=0.2):
         """Initialise a deep convolutional network.
 
         Parameters
         ----------
         channels: tuple
-            Tuple denoting number of channels in each convolutional layer.
-        fc: tuple
-            Tuple denoting number of hidden units in each fully connected
-            hidden layer. If fully connected hidden layers are used, then the
-            number of units in the first one should be set to the product of
-            the number of channels in the last convolutional layer and the
-            number of units in the last convolutional kernel.
+            Tuple denoting number of channels in each convolutional layer. Set
+            the final element to 1 for discriminator behaviour. Set to any
+            other value for general ConvNet behaviour.
+        transpose: bool or tuple
+            Specifies whether each hidden layer is a standard convolutional
+            layer (False) or a transpose convolutional (deconvolutional, True)
+            layer.
+        nonlinearity: 'leaky' or 'relu' or 'sigmoid' or 'tanh' or tuple
+            Nonlinearity to use in each convolutional layer.
         kernel_size: int or tuple
-            Side length of convolutional kernel.
+            Side length of convolutional kernel. A side length of 1 yields a
+            convolutional layer that is effectively equivalent to a fully
+            connected layer.
+        batch_norm: bool or tuple
+            Indicates whether batch normalisation should be applied to each
+            layer.
         stride: int or tuple
             Convolutional stride.
         padding: int or tuple
@@ -160,71 +166,71 @@ class DCNetwork(nn.Module):
             for each unit.
         leak: float
             Slope of the negative part of the hidden layers' leaky ReLU
-            activation function.
-        n_out: int
-            Number of output units. Set to 1 for discriminator behaviour.
-            Set to any other value for general ConvNet behaviour.
+            activation function. Used only if a leaky ReLU activation function
+            is specified.
 
-        If any of `kernel_size`, `stride`, `padding`, or `bias` is a tuple,
-        it should be exactly as long as `channels`; in this case, the ith item
-        denotes the parameter value for the ith convolutional layer.
+        If any of `transpose`, `nonlinearity`, `kernel_size`, `batch_norm`,
+        `stride`, `padding`, or `bias` is a tuple, it should be 1 shorter than
+        `channels`; in this case, the ith item denotes the parameter value for
+        the ith convolutional layer (mapping the ith index of channels to the
+        (i + 1)th index of channels).
         """
         super(DCNetwork, self).__init__()
-        self.n_conv = len(channels) + 1
-        self.n_fc = len(fc)
+        self.n_conv = len(channels)
         self.conv = nn.ModuleList()
-        self.fc = nn.ModuleList()
 
+        nonlinearity = _listify(nonlinearity, self.n_conv)
         kernel_size = _listify(kernel_size, self.n_conv)
+        batch_norm = _listify(batch_norm, self.n_conv)
+        transpose = _listify(transpose, self.n_conv)
         padding = _listify(padding, self.n_conv)
         stride = _listify(stride, self.n_conv)
         bias = _listify(bias, self.n_conv)
 
-        self.conv.append(nn.Sequential(
-            nn.Conv2d(
-                in_channels=channels[0],
-                out_channels=channels[1],
-                kernel_size=kernel_size[0],
-                stride=stride[0],
-                padding=padding[0],
-                bias=bias[0]
-            ),
-            nn.LeakyReLU(negative_slope=leak, inplace=True)
-        ))
-        for i, (r, s) in enumerate(zip(channels[2:], channels[1:-1])):
-            j = i + 1
-            self.conv.append(nn.Sequential(
-                nn.Conv2d(
-                    in_channels=s,
-                    out_channels=r,
-                    kernel_size=kernel_size[j],
-                    stride=stride[j],
-                    padding=padding[j],
-                    bias=bias[j]
-                ),
-                nn.BatchNorm2d(r),
-                nn.LeakyReLU(negative_slope=leak, inplace=True)
-            ))
-        self._final_conv_dim = r * (kernel_size[j] ** 2)
-        r = self._final_conv_dim
-        for i, (r, s) in enumerate(zip(fc[1:], fc[:-1])):
-            self.fc.append(nn.Sequential(
-                nn.Linear(s, r),
-                nn.LeakyReLU(negative_slope=leak),
-                nn.BatchNorm1d(r)
-            ))
-        self.out = nn.Sequential(
-            nn.Linear(r, n_out),
-            nn.Sigmoid()
-        )
+        for i, (r, s) in enumerate(zip(channels[1:], channels[:-1])):
+            layer = []
+
+            if transpose[i]:
+                layer.append(
+                    nn.ConvTranspose2d(
+                        in_channels=s,
+                        out_channels=r,
+                        kernel_size=kernel_size[i],
+                        stride=stride[i],
+                        padding=padding[i],
+                        bias=bias[i]
+                    )),
+            else:
+                layer.append(
+                    nn.Conv2d(
+                        in_channels=s,
+                        out_channels=r,
+                        kernel_size=kernel_size[i],
+                        stride=stride[i],
+                        padding=padding[i],
+                        bias=bias[i]
+                    ))
+
+            if batch_norm[i]:
+                layer.append(nn.BatchNorm2d(r))
+
+            if nonlinearity[i] == 'leaky':
+                layer.append(nn.LeakyReLU(negative_slope=leak, inplace=True))
+            elif nonlinearity[i] == 'relu':
+                layer.append(nn.ReLU(inplace=True))
+            elif nonlinearity[i] == 'sigmoid':
+                layer.append(nn.Sigmoid())
+            elif nonlinearity[i] == 'tanh':
+                layer.append(nn.Tanh())
+
+            self.conv.append(nn.Sequential(*layer))
+
+        self._final_conv_dim = r * (kernel_size[i] ** 2)
 
     def forward(self, x):
         for i in range(self.n_conv):
             x = self.conv[i](x)
-        x = x.view(-1, self._final_conv_dim)
-        for i in range(self.n_fc):
-            x = self.fc[i](x)
-        return self.out(x)
+        return x
 
 
 class DCTranspose(nn.Module):
