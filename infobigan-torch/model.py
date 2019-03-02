@@ -21,11 +21,6 @@ def _listify(item, length):
 def _conv_out_size(input_size, kernels, strides, paddings):
     """Get the output size of a convolutional stack with the specified
     parameters.
-
-    TODO: Check how torch handles fractional dim outputs. I'm taking floor
-    here, which is probably wrong. (ceil was definitely wrong. Floor at least
-    seems to work. This would suggest that pytorch is automatically cropping
-    rather than automatically padding if there's a size mismatch.)
     """
     size = input_size
     for k, s, p in zip(kernels, strides, paddings):
@@ -63,6 +58,7 @@ class InfoBiGAN(object):
                  stride=2,
                  padding=1,
                  bias=False,
+                 manifest_dim=28,
                  latent_dim=100):
         """Initialise an information maximising adversarially learned
         inference network (InfoBiGAN).
@@ -94,6 +90,8 @@ class InfoBiGAN(object):
             for each unit.
         latent_dim: int
             Number of latent features that the generator network samples.
+        manifest_dim: int
+            Side length of the input image.
 
         If any of `kernel_size`, `stride`, `padding`, or `bias` is a tuple,
         it should be exactly as long as `channels`; in this case, the ith item
@@ -107,15 +105,17 @@ class InfoBiGAN(object):
 
         self.discriminator = DCNetwork(
             channels=channels, kernel_size=kernel_size, stride=stride,
-            padding=padding, bias=bias, n_out=1)
+            padding=padding, bias=bias, in_dim=manifest_dim, out_dim=1)
         self.encoder = DCNetwork(
             channels=channels, kernel_size=kernel_size, stride=stride,
-            padding=padding, bias=bias, n_out=latent_dim)
+            padding=padding, bias=bias, in_dim=manifest_dim,
+            out_dim=latent_dim)
         self.generator = DCTranspose(
             channels=channels[::-1], kernel_size=kernel_size[::-1],
             stride=stride[::-1], padding=padding[::-1], bias=bias[::-1],
-            latent_dim=latent_dim)
+            latent_dim=latent_dim, target_dim=manifest_dim)
         self.latent_dim = latent_dim
+        self.manifest_dim = manifest_dim
 
     def train(self):
         self.discriminator.train()
@@ -144,7 +144,7 @@ class DCArchitecture(nn.Module):
     """
     def __init__(self,
                  channels=(1, 128, 256, 512, 1024, 1),
-                 transpose=False,
+                 hidden='conv',
                  nonlinearity=('leaky', 'leaky', 'leaky', 'leaky', 'sigmoid'),
                  kernel_size=(4, 4, 4, 4, 1),
                  batch_norm=(False, True, True, True, False),
@@ -160,10 +160,12 @@ class DCArchitecture(nn.Module):
             Tuple denoting number of channels in each convolutional layer. Set
             the final element to 1 for discriminator behaviour. Set to any
             other value for general ConvNet behaviour.
-        transpose: bool or tuple
-            Specifies whether each hidden layer is a standard convolutional
-            layer (False) or a transpose convolutional (deconvolutional, True)
-            layer.
+        hidden: bool or tuple
+            Specifies the hidden layer type.
+            * `conv` denotes a standard convolutional layer.
+            * `transpose` denotes a transpose convolutional layer.
+            * `maxpool` denotes a max pooling layer. The input `channels` must
+              equal the output `channels.`
         nonlinearity: 'leaky' or 'relu' or 'sigmoid' or 'tanh' or tuple
             Nonlinearity to use in each convolutional layer.
         kernel_size: int or tuple
@@ -185,7 +187,7 @@ class DCArchitecture(nn.Module):
             activation function. Used only if a leaky ReLU activation function
             is specified.
 
-        If any of `transpose`, `nonlinearity`, `kernel_size`, `batch_norm`,
+        If any of `hidden`, `nonlinearity`, `kernel_size`, `batch_norm`,
         `stride`, `padding`, or `bias` is a tuple, it should be 1 shorter than
         `channels`; in this case, the ith item denotes the parameter value for
         the ith convolutional layer (mapping the ith index of channels to the
@@ -198,15 +200,25 @@ class DCArchitecture(nn.Module):
         nonlinearity = _listify(nonlinearity, self.n_conv)
         kernel_size = _listify(kernel_size, self.n_conv)
         batch_norm = _listify(batch_norm, self.n_conv)
-        transpose = _listify(transpose, self.n_conv)
         padding = _listify(padding, self.n_conv)
+        hidden = _listify(hidden, self.n_conv)
         stride = _listify(stride, self.n_conv)
         bias = _listify(bias, self.n_conv)
 
         for i, (r, s) in enumerate(zip(channels[1:], channels[:-1])):
             layer = []
 
-            if transpose[i]:
+            if hidden[i] == 'conv':
+                layer.append(
+                    nn.Conv2d(
+                        in_channels=s,
+                        out_channels=r,
+                        kernel_size=kernel_size[i],
+                        stride=stride[i],
+                        padding=padding[i],
+                        bias=bias[i]
+                    ))
+            elif hidden[i] == 'transpose':
                 layer.append(
                     nn.ConvTranspose2d(
                         in_channels=s,
@@ -215,12 +227,10 @@ class DCArchitecture(nn.Module):
                         stride=stride[i],
                         padding=padding[i],
                         bias=bias[i]
-                    )),
-            else:
+                    ))
+            elif hidden[i] == 'maxpool':
                 layer.append(
-                    nn.Conv2d(
-                        in_channels=s,
-                        out_channels=r,
+                    nn.MaxPool2d(
                         kernel_size=kernel_size[i],
                         stride=stride[i],
                         padding=padding[i],
@@ -268,8 +278,8 @@ class DCNetwork(DCArchitecture):
                  padding=(3, 1, 1, 1),
                  bias=False,
                  leak=0.2,
-                 dim_in=28,
-                 dim_out=1):
+                 in_dim=28,
+                 out_dim=1):
         """Initialise a deep convolutional network.
 
         Parameters
@@ -294,11 +304,11 @@ class DCNetwork(DCArchitecture):
         leak: float
             Slope of the negative part of the hidden layers' leaky ReLU
             activation function.
-        dim_in: int
+        in_dim: int
             Input pixel dimensionality. Currently assumes a square input.
             This is the width or height of the input, not the number of
             channels or the batch cardinality.
-        dim_out: int
+        out_dim: int
             Number of output units. Set to 1 for discriminator behaviour.
             Set to any other value for general ConvNet behaviour.
 
@@ -310,14 +320,14 @@ class DCNetwork(DCArchitecture):
 
         fc = list(fc)
         n_fc = len(fc) + 1
-        conv_out_size = _conv_out_size(dim_in,
+        conv_out_size = _conv_out_size(in_dim,
                                        _listify(kernel_size, n_conv),
                                        _listify(stride, n_conv),
                                        _listify(padding, n_conv))
 
         kernel_size = (_listify(kernel_size, n_conv) + [conv_out_size]
                        + [1] * (n_fc - 1))
-        channels = _listify(channels, n_conv) + fc + [dim_out]
+        channels = _listify(channels, n_conv) + fc + [out_dim]
         padding = _listify(padding, n_conv) + [0] * n_fc
         stride = _listify(stride, n_conv) + [1] * n_fc
         bias = _listify(bias, n_conv) + [True] * n_fc
@@ -327,7 +337,7 @@ class DCNetwork(DCArchitecture):
         super(DCNetwork, self).__init__(
             channels=channels,
             kernel_size=kernel_size,
-            transpose=False,
+            hidden='conv',
             nonlinearity=nonlinearity,
             batch_norm=batch_norm,
             stride=stride,
@@ -362,6 +372,12 @@ class DCTranspose(DCArchitecture):
         ----------
         channels: tuple
             Tuple denoting number of channels in each deconvolutional layer.
+        fc: tuple
+            Tuple denoting number of hidden units in each fully connected
+            hidden layer. If fully connected hidden layers are used, then the
+            number of units in the first one should be set to the product of
+            the number of channels in the last convolutional layer and the
+            number of units in the last convolutional kernel.
         kernel_size: int or tuple
             Side length of convolutional kernel.
         stride: int or tuple
@@ -374,6 +390,9 @@ class DCTranspose(DCArchitecture):
         latent_dim: int
             Number of latent features that the generator samples. (This is the
             number of input features.)
+        target_dim: int
+            Desired dimensionality of the image generated by the network. This
+            is the side length of the image in pixels.
 
         If any of `kernel_size`, `stride`, `padding`, or `bias` is a tuple,
         it should be exactly as long as `channels`; in this case, the ith item
@@ -394,14 +413,14 @@ class DCTranspose(DCArchitecture):
         padding = [conv_in_size - 1] * n_fc + _listify(padding, n_conv)
         stride = [1] * n_fc + _listify(stride, n_conv)
         nonlinearity = [None] + ['relu'] * (n_conv + n_fc - 2) + ['tanh']
-        transpose = [False] * n_fc + [True] * n_conv
+        hidden = ['conv'] * n_fc + ['transpose'] * n_conv
         bias = [True] * n_fc + _listify(bias, n_conv) + [False]
         batch_norm = [False] + [True] * (n_conv + n_fc - 2) + [False]
 
         super(DCTranspose, self).__init__(
             channels=channels,
             kernel_size=kernel_size,
-            transpose=transpose,
+            hidden=hidden,
             nonlinearity=nonlinearity,
             batch_norm=batch_norm,
             stride=stride,
