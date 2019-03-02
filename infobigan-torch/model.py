@@ -6,9 +6,11 @@ Information maximising adversarially learned inference (InfoBiGAN)
 """
 import torch
 from torch import nn #, optim
-import numpy as np
 #from pytorchure.train.trainer import Trainer
 #from pytorchure.utils import thumb_grid, animate_gif
+
+
+eps = 1e-15
 
 
 def _listify(item, length):
@@ -24,7 +26,7 @@ def _conv_out_size(input_size, kernels, strides, paddings):
     """
     size = input_size
     for k, s, p in zip(kernels, strides, paddings):
-        size = np.floor((size - k + 2 * p) / s + 1)
+        size = (size - k + 2 * p) // s + 1
     return int(size)
 
 
@@ -34,7 +36,7 @@ class InfoBiGAN(object):
 
     Attributes
     ----------
-    discriminator: DCNetwork
+    discriminator: DualDiscriminator
         InfoBiGAN's discriminator network, which is presented a set of
         latent space-manifest space pairs and determines whether each
         pair was produced by the encoder or the generator.
@@ -103,9 +105,10 @@ class InfoBiGAN(object):
         stride = _listify(stride, n_conv)
         bias = _listify(bias, n_conv)
 
-        self.discriminator = DCNetwork(
+        self.discriminator = DualDiscriminator(
             channels=channels, kernel_size=kernel_size, stride=stride,
-            padding=padding, bias=bias, in_dim=manifest_dim, out_dim=1)
+            padding=padding, bias=bias, manifest_dim=manifest_dim,
+            latent_dim=latent_dim)
         self.encoder = DCNetwork(
             channels=channels, kernel_size=kernel_size, stride=stride,
             padding=padding, bias=bias, in_dim=manifest_dim,
@@ -127,10 +130,99 @@ class InfoBiGAN(object):
         self.generator.eval()
         self.encoder.eval()
 
-    def load_state_dict(self, params_d, params_g, params_e):
-        self.discriminator.load_state_dict(params_d)
+    def load_state_dict(self, params_g, params_e,
+                        params_d_z, params_d_x, params_d_xz):
+        self.discriminator.load_state_dict(params_z=params_d_z,
+                                           params_x=params_d_x,
+                                           params_xz=params_d_xz)
         self.generator.load_state_dict(params_g)
         self.encoder.load_state_dict(params_e)
+
+
+class DualDiscriminator(nn.Module):
+    """A discriminator network that learns to identify whether a (latent,
+    manifest) pair is drawn from the encoder or from the decoder.
+
+    Attributes
+    ----------
+    x_discriminator: DCNetwork
+        Representational network for manifest-space data.
+    z_discriminator: DCNetwork
+        Representational network for latent-space data.
+    zx_discriminator: DCNetwork
+        Discriminator that splices together representations of latent- and
+        manifest-space data and yields a decision regarding the provenance
+        of the data pair.
+    """
+    def __init__(self,
+                 manifest_dim=28,
+                 latent_dim=100,
+                 channels=(1, 128, 256, 512, 1024),
+                 kernel_size=4,
+                 stride=2,
+                 padding=(3, 1, 1, 1),
+                 bias=False):
+        """Initialise a dual discriminator.
+
+        Parameters
+        ----------
+        manifest_dim: int
+            Side length of the input image.
+        latent_dim: int
+            Dimensionality of the latent space.
+        channels: tuple
+            Tuple denoting number of channels in each convolutional layer of
+            the manifest-space representational network.
+        kernel_size: int or tuple
+            Side length of convolutional kernel in the manifest-space
+            representational network.
+        stride: int or tuple
+            Convolutional stride for the manifest-space representational
+            network.
+        padding: int or tuple
+            Padding to be applied to the manifest-space image data during
+            convolution.
+        bias: bool or tuple
+            Indicates whether each convolutional filter in the image
+            (manifest) representational network includes bias terms for each
+            unit.
+        """
+        super(DualDiscriminator, self).__init__()
+        self.x_discriminator = DCNetwork(
+            channels=channels, kernel_size=kernel_size, stride=stride,
+            padding=padding, bias=bias, in_dim=manifest_dim,
+            out_dim=latent_dim*2)
+        self.z_discriminator = DCNetwork(
+            channels=(latent_dim), fc=(latent_dim*2, latent_dim*2),
+            kernel_size=1, stride=1, padding=0, bias=True, in_dim=1,
+            out_dim=latent_dim*2)
+        self.zx_discriminator = DCNetwork(
+            channels=(latent_dim*4), fc=(latent_dim*4, latent_dim*4),
+            kernel_size=1, stride=1, padding=0, bias=True, in_dim=1,
+            out_dim=1)
+
+    def train(self):
+        self.z_discriminator.train()
+        self.x_discriminator.train()
+        self.zx_discriminator.train()
+
+    def eval(self):
+        self.z_discriminator.eval()
+        self.x_discriminator.eval()
+        self.zx_discriminator.eval()
+
+    def load_state_dict(self, params_z, params_x, params_zx):
+        self.z_discriminator.load_state_dict(params_z)
+        self.x_discriminator.load_state_dict(params_x)
+        self.zx_discriminator.load_state_dict(params_zx)
+
+    def forward(self, z, x):
+        z = self.z_discriminator(z)
+        x = self.x_discriminator(x)
+        zx = torch.cat([z, x], 1) + eps
+        zx = self.zx_discriminator(zx)
+        return zx
+
 
 
 class DCArchitecture(nn.Module):
@@ -160,7 +252,7 @@ class DCArchitecture(nn.Module):
             Tuple denoting number of channels in each convolutional layer. Set
             the final element to 1 for discriminator behaviour. Set to any
             other value for general ConvNet behaviour.
-        hidden: bool or tuple
+        hidden: str or tuple
             Specifies the hidden layer type.
             * `conv` denotes a standard convolutional layer.
             * `transpose` denotes a transpose convolutional layer.
@@ -169,9 +261,10 @@ class DCArchitecture(nn.Module):
         nonlinearity: 'leaky' or 'relu' or 'sigmoid' or 'tanh' or tuple
             Nonlinearity to use in each convolutional layer.
         kernel_size: int or tuple
-            Side length of convolutional kernel. A side length of 1 yields a
-            convolutional layer that is effectively equivalent to a fully
-            connected layer.
+            Side length of convolutional kernel. A convolutional layer whose
+            kernel size is equivalent to the entire field of the previous
+            convolutional layer is effectively equivalent to a fully connected
+            layer.
         batch_norm: bool or tuple
             Indicates whether batch normalisation should be applied to each
             layer.
@@ -194,8 +287,13 @@ class DCArchitecture(nn.Module):
         (i + 1)th index of channels).
         """
         super(DCArchitecture, self).__init__()
-        self.n_conv = len(channels) - 1
         self.conv = nn.ModuleList()
+        try:
+            channels = list(channels)
+            self.n_conv = len(channels) - 1
+        except TypeError:
+            channels = [channels]
+            self.n_conv = len(channels) - 1
 
         nonlinearity = _listify(nonlinearity, self.n_conv)
         kernel_size = _listify(kernel_size, self.n_conv)
@@ -316,7 +414,12 @@ class DCNetwork(DCArchitecture):
         it should be exactly as long as `channels`; in this case, the ith item
         denotes the parameter value for the ith convolutional layer.
         """
-        n_conv = len(channels) - 1
+        try:
+            channels = list(channels)
+            n_conv = len(channels) - 1
+        except TypeError:
+            channels = [channels]
+            n_conv = len(channels) - 1
 
         fc = list(fc)
         n_fc = len(fc) + 1
@@ -327,7 +430,7 @@ class DCNetwork(DCArchitecture):
 
         kernel_size = (_listify(kernel_size, n_conv) + [conv_out_size]
                        + [1] * (n_fc - 1))
-        channels = _listify(channels, n_conv) + fc + [out_dim]
+        channels = channels + fc + [out_dim]
         padding = _listify(padding, n_conv) + [0] * n_fc
         stride = _listify(stride, n_conv) + [1] * n_fc
         bias = _listify(bias, n_conv) + [True] * n_fc
@@ -398,7 +501,12 @@ class DCTranspose(DCArchitecture):
         it should be exactly as long as `channels`; in this case, the ith item
         denotes the parameter value for the ith convolutional layer.
         """
-        n_conv = len(channels) - 1
+        try:
+            channels = list(channels)
+            n_conv = len(channels) - 1
+        except TypeError:
+            channels = [channels]
+            n_conv = len(channels) - 1
 
         fc = list(fc)
         n_fc = len(fc) + 1
@@ -407,7 +515,7 @@ class DCTranspose(DCArchitecture):
                                       _listify(stride, n_conv)[::-1],
                                       _listify(padding, n_conv)[::-1])
 
-        channels = [latent_dim] + fc + _listify(channels, n_conv)
+        channels = [latent_dim] + fc + channels
         kernel_size = ([1] * (n_fc - 1) + [conv_in_size]
                        + _listify(kernel_size, n_conv))
         padding = [conv_in_size - 1] * n_fc + _listify(padding, n_conv)
