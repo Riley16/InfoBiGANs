@@ -2,7 +2,9 @@
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
 """
-Information maximising adversarially learned inference (InfoBiGAN)
+InfoBiGAN
+~~~~~~~~~
+Information maximising adversarially learned inference network
 """
 import torch
 from torch import nn #, optim
@@ -48,8 +50,6 @@ class InfoBiGAN(object):
         InfoBiGAN's inferential network, which learns the latent space
         encodings of a dataset through a minimax game played against the
         discriminator.
-    regulariser: QLayer
-        . . . Not yet implemented . . .
     latent_dim: int
         Dimensionality of the latent space. Currently, this is basically a
         vanilla BiGAN, so this only includes noise.
@@ -58,7 +58,7 @@ class InfoBiGAN(object):
                  channels=(1, 128, 256, 512, 1024),
                  kernel_size=4,
                  stride=2,
-                 padding=1,
+                 padding=(3, 1, 1, 1),
                  bias=False,
                  manifest_dim=28,
                  latent_dim=100):
@@ -130,13 +130,18 @@ class InfoBiGAN(object):
         self.generator.eval()
         self.encoder.eval()
 
+    def zero_grad(self):
+        self.encoder.zero_grad()
+        self.generator.zero_grad()
+        self.discriminator.zero_grad()
+
     def load_state_dict(self, params_g, params_e,
                         params_d_z, params_d_x, params_d_xz):
+        self.encoder.load_state_dict(params_e)
+        self.generator.load_state_dict(params_g)
         self.discriminator.load_state_dict(params_z=params_d_z,
                                            params_x=params_d_x,
                                            params_xz=params_d_xz)
-        self.generator.load_state_dict(params_g)
-        self.encoder.load_state_dict(params_e)
 
 
 class DualDiscriminator(nn.Module):
@@ -153,6 +158,8 @@ class DualDiscriminator(nn.Module):
         Discriminator that splices together representations of latent- and
         manifest-space data and yields a decision regarding the provenance
         of the data pair.
+    regulariser: QStack
+        . . . Not yet implemented . . .
     """
     def __init__(self,
                  manifest_dim=28,
@@ -191,15 +198,15 @@ class DualDiscriminator(nn.Module):
         self.x_discriminator = DCNetwork(
             channels=channels, kernel_size=kernel_size, stride=stride,
             padding=padding, bias=bias, in_dim=manifest_dim,
-            out_dim=latent_dim*2)
+            out_dim=latent_dim*2, final_act='leaky', embedded=(False, True))
         self.z_discriminator = DCNetwork(
             channels=(latent_dim), fc=(latent_dim*2, latent_dim*2),
             kernel_size=1, stride=1, padding=0, bias=True, in_dim=1,
-            out_dim=latent_dim*2)
+            out_dim=latent_dim*2, final_act='leaky', embedded=(False, True))
         self.zx_discriminator = DCNetwork(
             channels=(latent_dim*4), fc=(latent_dim*4, latent_dim*4),
             kernel_size=1, stride=1, padding=0, bias=True, in_dim=1,
-            out_dim=1)
+            out_dim=1, embedded=(True, False))
 
     def train(self):
         self.z_discriminator.train()
@@ -241,7 +248,7 @@ class DCArchitecture(nn.Module):
                  kernel_size=(4, 4, 4, 4, 1),
                  batch_norm=(False, True, True, True, False),
                  stride=(2, 2, 2, 2, 1),
-                 padding=(1, 1, 1, 1, 0),
+                 padding=(3, 1, 1, 1, 0),
                  bias=(False, False, False, False, True),
                  leak=0.2):
         """Initialise a deep convolutional network.
@@ -264,7 +271,7 @@ class DCArchitecture(nn.Module):
             Side length of convolutional kernel. A convolutional layer whose
             kernel size is equivalent to the entire field of the previous
             convolutional layer is effectively equivalent to a fully connected
-            layer.
+            layer if there is no padding.
         batch_norm: bool or tuple
             Indicates whether batch normalisation should be applied to each
             layer.
@@ -365,8 +372,6 @@ class DCNetwork(DCArchitecture):
     ----------
     n_conv: int
         Number of hidden convolutional layers.
-    n_fc: int
-        Number of hidden fully connected layers.
     """
     def __init__(self,
                  channels=(1, 128, 256, 512, 1024),
@@ -376,6 +381,8 @@ class DCNetwork(DCArchitecture):
                  padding=(3, 1, 1, 1),
                  bias=False,
                  leak=0.2,
+                 final_act='sigmoid',
+                 embedded=(False, False),
                  in_dim=28,
                  out_dim=1):
         """Initialise a deep convolutional network.
@@ -402,6 +409,13 @@ class DCNetwork(DCArchitecture):
         leak: float
             Slope of the negative part of the hidden layers' leaky ReLU
             activation function.
+        final_act: `sigmoid` or `tanh` or `relu` or `leaky` or None
+            Nonlinear activation function for the final layer of the network.
+        embedded: (bool, bool)
+            Indicates whether the network is embedded in a larger network.
+            The first indicator should be True if the network is directly
+            receiving input from another, while the second indicator should be
+            True if the network is directly passing output to another.
         in_dim: int
             Input pixel dimensionality. Currently assumes a square input.
             This is the width or height of the input, not the number of
@@ -434,8 +448,9 @@ class DCNetwork(DCArchitecture):
         padding = _listify(padding, n_conv) + [0] * n_fc
         stride = _listify(stride, n_conv) + [1] * n_fc
         bias = _listify(bias, n_conv) + [True] * n_fc
-        nonlinearity = ['leaky'] * (n_conv + n_fc - 1) + ['sigmoid']
-        batch_norm = [False] + [True] * (n_conv + n_fc - 2) + [False]
+        nonlinearity = ['leaky'] * (n_conv + n_fc - 1) + [final_act]
+        batch_norm = ([embedded[0]] + [True] * (n_conv + n_fc - 2)
+                      + [embedded[1]])
 
         super(DCNetwork, self).__init__(
             channels=channels,
@@ -467,6 +482,8 @@ class DCTranspose(DCArchitecture):
                  stride=2,
                  padding=(1, 1, 1, 3),
                  bias=False,
+                 final_act='tanh',
+                 embedded=(False, False),
                  latent_dim=100,
                  target_dim=28):
         """Initialise a deep convolutional generator.
@@ -490,6 +507,13 @@ class DCTranspose(DCArchitecture):
         bias: bool or tuple
             Indicates whether each convolutional filter includes bias terms
             for each unit.
+        final_act: `tanh` or `sigmoid` or `relu` or `leaky` or None
+            Nonlinear activation function for the final layer of the network.
+        embedded: (bool, bool)
+            Indicates whether the network is embedded in a larger network.
+            The first indicator should be True if the network is directly
+            receiving input from another, while the second indicator should be
+            True if the network is directly passing output to another.
         latent_dim: int
             Number of latent features that the generator samples. (This is the
             number of input features.)
@@ -520,10 +544,11 @@ class DCTranspose(DCArchitecture):
                        + _listify(kernel_size, n_conv))
         padding = [conv_in_size - 1] * n_fc + _listify(padding, n_conv)
         stride = [1] * n_fc + _listify(stride, n_conv)
-        nonlinearity = [None] + ['relu'] * (n_conv + n_fc - 2) + ['tanh']
+        nonlinearity = [None] + ['relu'] * (n_conv + n_fc - 2) + [final_act]
         hidden = ['conv'] * n_fc + ['transpose'] * n_conv
         bias = [True] * n_fc + _listify(bias, n_conv) + [False]
-        batch_norm = [False] + [True] * (n_conv + n_fc - 2) + [False]
+        batch_norm = ([embedded[0]] + [True] * (n_conv + n_fc - 2)
+                      + [embedded[1]])
 
         super(DCTranspose, self).__init__(
             channels=channels,
@@ -536,3 +561,78 @@ class DCTranspose(DCArchitecture):
             bias=bias
         )
 
+
+class QStack(nn.Module):
+    """Q distribution neural network for informational regularisation.
+
+    Attributes
+    ----------
+    q_regularised: ModuleDict
+        Dictionary of modules that yield distributional parameters for the
+        compressible input c.
+    latent_categorical: int
+        Number of regularised categorical variables in the latent space.
+    latent_gaussian: int
+        Number of regularised Gaussian variables in the latent space.
+    """
+    def __init__(self,
+                 latent_categorical,
+                 latent_gaussian,
+                 hidden_dim=100):
+        """Initialise a Q stack.
+
+        Parameters
+        ----------
+        latent_categorical: tuple
+            List of level counts for uniformly categorically distributed
+            variables in c. For instance, (10, 8) denotes one variable with 10
+            levels and another with 8 levels.
+        latent_gaussian: int
+            Number of normally distributed variables in c.
+        hidden_dim: int
+            Dimensionality of the hidden layer.
+        """
+        super(QStack, self).__init__()
+        self.q_input = DCNetwork(
+            channels=(hidden_dim),
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            bias=True,
+            leak=0.2,
+            final_act='leaky',
+            in_dim=1,
+            out_dim=hidden_dim
+        )
+        self.q_regularised = nn.ModuleDict()
+        self.latent_gaussian = latent_gaussian
+        self.latent_categorical = len(latent_categorical)
+        for i, levels in enumerate(latent_categorical):
+            self.q_regularised['cat{}'.format(i)] = nn.Sequential(
+                nn.Conv2d(
+                    in_channels=hidden_dim,
+                    out_channels=levels, kernel_size=1,
+                    stride=1, padding=0, bias=True),
+                nn.Softmax()
+            )
+        if latent_gaussian > 0:
+            self.q_regularised['gaussian'] = nn.ModuleDict({
+                'mean': nn.Conv2d(
+                    in_channels=hidden_dim, out_channels=latent_gaussian,
+                    kernel_size=1, stride=1, padding=0, bias=True),
+                'logstd': nn.Conv2d(
+                    in_channels=hidden_dim, out_channels=latent_gaussian,
+                    kernel_size=1, stride=1, padding=0, bias=True)
+            })
+
+    def forward(self, x):
+        c = {}
+        x = self.q_input(x)
+        for i in range(self.latent_categorical):
+            c['cat{}'.format(i)] = self.q_regularised['cat{}'.format(i)](x)
+        if self.latent_gaussian > 0:
+            c['gaussian'] = {}
+            c['gaussian']['mean'] = self.q_regularised['gaussian']['mean'](x)
+            c['gaussian']['logstd'] = (
+                self.q_regularised['gaussian']['logstd'](x))
+        return c
