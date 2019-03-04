@@ -7,7 +7,7 @@ InfoBiGAN trainer
 Trainer class for the InfoBiGAN
 """
 import torch
-from torch import optim
+from torch import nn, optim
 from .conv import DCTranspose, DCNetwork
 from .utils import eps, _listify
 from pytorchure.train.trainer import Trainer
@@ -165,6 +165,7 @@ def config_sample(latent_gaussian=2, categorical_levels=(10,),
     dim: int
         Total number of latent-space vectors to include in the sample.
     """
+    c = {}
     z = gaussian(dim, latent_noise)
     c['categorical'] = categorical(dim, categorical_levels)
     c['gaussian'] = gaussian(dim, latent_gaussian)
@@ -233,8 +234,8 @@ class InfoBiGANTrainer(Trainer):
                  batch_size=100,
                  learning_rate=0.0002,
                  max_epoch=200):
-        super(GANTrainer, self).__init__(loader, model, batch_size,
-                                         learning_rate, max_epoch)
+        super(InfoBiGANTrainer, self).__init__(loader, model, batch_size,
+                                               learning_rate, max_epoch)
 
         self.optimiser_d = optim.Adam(self.model.discriminator.parameters(),
                                       lr=self.learning_rate)
@@ -247,7 +248,7 @@ class InfoBiGANTrainer(Trainer):
          self.target_e) = config_infobigan_loss(self.batch_size)
 
     def train(self, log_progress=True, save_images=True, img_prefix='gan'):
-        """Train the GAN.
+        """Train the InfoBiGAN.
 
         Parameters
         ----------
@@ -256,7 +257,7 @@ class InfoBiGANTrainer(Trainer):
         self.model.train()
         c, z = config_sample(latent_gaussian=self.model.reg_gaussian,
                              categorical_levels=self.model.reg_categorical,
-                             latent_noise=self.latent_nois,
+                             latent_noise=self.model.latent_noise,
                              dim=16)
 
         for epoch in range(self.max_epoch):
@@ -267,15 +268,17 @@ class InfoBiGANTrainer(Trainer):
                 batch_cz =  config_sample(
                     latent_gaussian=self.model.reg_gaussian,
                     categorical_levels=self.model.reg_categorical,
-                    latent_noise=self.latent_nois,
+                    latent_noise=self.model.latent_noise,
                     dim=self.batch_size)
 
+                x_hat = self.model.generator(batch_cz)
+                c_hat, z_hat = self.model.encoder(batch_x)
                 generator_data = (
                     batch_cz,
-                    self.model.generator(batch_cz).detach()
+                    x_hat.detach()
                 )
                 encoder_data = (
-                    self.model.encoder(batch_x).detach(),
+                    (self._detached(c_hat), z_hat.detach()),
                     batch_x
                 )
                 error_d, _, _ = self.train_discriminator(
@@ -283,10 +286,10 @@ class InfoBiGANTrainer(Trainer):
 
                 generator_data = (
                     batch_cz,
-                    self.model.generator(batch_cz)
+                    x_hat
                 )
                 encoder_data = (
-                    self.model.encoder(batch_x),
+                    (c_hat, z_hat),
                     batch_x
                 )
                 error_g, error_e = self.train_generator_encoder(
@@ -309,11 +312,11 @@ class InfoBiGANTrainer(Trainer):
         """
         self.optimiser_d.zero_grad()
 
-        prediction_g, q_g = self.model.discriminator(generator_data)
+        prediction_g, q_g = self.model.discriminator(*generator_data)
         error_g = self.loss(prediction_g, self.target_g)
         error_g.backward()
 
-        prediction_e, q_e = self.model.discriminator(encoder_data)
+        prediction_e, q_e = self.model.discriminator(*encoder_data)
         error_e = self.loss(prediction_e, self.target_e)
         error_e.backward()
 
@@ -326,20 +329,28 @@ class InfoBiGANTrainer(Trainer):
 
         Parameters
         ----------
-        fake_data: Tensor
-            Mini-batch of observations fabricated by the generator.
+        generator_data: Tensor
+            Mini-batch of observations sampled from the generator.
+        encoder_data: Tensor
+            Mini-batch of observations sampled from the encoder.
         """
         self.optimiser_g.zero_grad()
         self.optimiser_e.zero_grad()
 
-        prediction_g, q_g = self.model.discriminator(generator_data)
+        prediction_g, q_g = self.model.discriminator(*generator_data)
         error_g = self.loss(prediction_g, self.target_g)
-        error.backward()
+        error_g.backward()
 
-        prediction_e, q_e = self.model.discriminator(encoder_data)
+        prediction_e, q_e = self.model.discriminator(*encoder_data)
         error_e = self.loss(prediction_e, self.target_e)
-        error.backward()
+        error_e.backward()
 
         self.optimiser_g.step()
         self.optimiser_e.step()
         return error_g, error_e
+
+    def _detached(self, c):
+        return {
+            'categorical': [i.detach() for i in c['categorical']],
+            'gaussian': c['gaussian'].detach()
+        }

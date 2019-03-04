@@ -44,7 +44,7 @@ class InfoBiGAN(object):
                  channels=(1, 128, 256, 512, 1024),
                  kernel_size=4,
                  stride=2,
-                 padding=(2, 2, 1, 1),
+                 padding=(3, 1, 1, 1),
                  bias=False,
                  manifest_dim=28,
                  latent_dim=100,
@@ -94,7 +94,7 @@ class InfoBiGAN(object):
         it should be exactly as long as `channels`; in this case, the ith item
         denotes the parameter value for the ith convolutional layer.
         """
-        n_conv = len(channels) + 1
+        n_conv = len(channels) - 1
         kernel_size = _listify(kernel_size, n_conv)
         padding = _listify(padding, n_conv)
         stride = _listify(stride, n_conv)
@@ -131,11 +131,6 @@ class InfoBiGAN(object):
         self.generator.eval()
         self.encoder.eval()
 
-    def zero_grad(self):
-        self.encoder.zero_grad()
-        self.generator.zero_grad()
-        self.discriminator.zero_grad()
-
     def load_state_dict(self, params_g, params_e, params_d):
         self.encoder.load_state_dict(params_e)
         self.generator.load_state_dict(params_g)
@@ -165,7 +160,7 @@ class DualDiscriminator(nn.Module):
                  channels=(1, 128, 256, 512, 1024),
                  kernel_size=4,
                  stride=2,
-                 padding=(2, 2, 1, 1),
+                 padding=(3, 1, 1, 1),
                  bias=False,
                  reg_categorical=(10,),
                  reg_gaussian=2):
@@ -221,7 +216,7 @@ class DualDiscriminator(nn.Module):
         if isinstance(z, tuple):
             z = torch.cat(
                 [z[1], z[0]['gaussian'], *z[0]['categorical']], 1)
-        z = self.z_discriminator(z)
+        z = self.z_discriminator(z.view(z.size(0), z.size(1), 1, 1))
         x = self.x_discriminator(x)
         zx = torch.cat([z, x], 1) + eps
         zx = self.zx_discriminator(zx)
@@ -233,14 +228,15 @@ class RegularisedGenerator(DCTranspose):
     """A deep transpose convolutional network that parses regularised and
     non-regularised variables.
     """
-    def __init__(*args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super(RegularisedGenerator, self).__init__(*args, **kwargs)
 
     def forward(self, zc):
         if isinstance(zc, tuple):
             zc = torch.cat(
                 [zc[1], zc[0]['gaussian'], *zc[0]['categorical']], 1)
-        return super(RegularisedGenerator, self).forward(zc)
+        return super(RegularisedGenerator, self).forward(
+            zc.view(zc.size(0), zc.size(1), 1, 1))
 
 
 class RegularisedEncoder(nn.Module):
@@ -260,7 +256,7 @@ class RegularisedEncoder(nn.Module):
                  channels=(1, 128, 256, 512, 1024),
                  kernel_size=4,
                  stride=2,
-                 padding=(2, 2, 1, 1),
+                 padding=(3, 1, 1, 1),
                  bias=False,
                  manifest_dim=28,
                  hidden_dim=256,
@@ -297,6 +293,8 @@ class RegularisedEncoder(nn.Module):
             Number of features in the latent space that are not regularised.
         """
         super(RegularisedEncoder, self).__init__()
+        self.reg_gaussian = reg_gaussian
+        self.reg_categorical = len(reg_categorical)
         self.conv = DCNetwork(
             channels=channels, kernel_size=kernel_size, stride=stride,
             padding=padding, bias=bias, in_dim=manifest_dim,
@@ -306,7 +304,7 @@ class RegularisedEncoder(nn.Module):
         self.code['z'] = nn.Conv2d(
             in_channels=hidden_dim, out_channels=latent_noise_dim,
             kernel_size=1, stride=1, padding=0, bias=True)
-        self.code['categorical'] = ModuleList()
+        self.code['categorical'] = nn.ModuleList()
         for i, levels in enumerate(reg_categorical):
             self.code['categorical'].append(nn.Sequential(
                 nn.Conv2d(
@@ -320,14 +318,14 @@ class RegularisedEncoder(nn.Module):
                 kernel_size=1, stride=1, padding=0, bias=True)
 
     def forward(self, x):
-        c = {'categorical': [None] * len(reg_categorical)}
+        c = {'categorical': [None] * self.reg_categorical}
         zc = self.conv(x)
         z = self.code['z'](zc)
-        for i in range(len(reg_categorical)):
+        for i in range(self.reg_categorical):
             c['categorical'][i] = self.code['categorical'][i](zc)
-        if reg_gaussian > 0:
+        if self.reg_gaussian > 0:
             c['gaussian'] = self.code['gaussian'](zc)
-        return z, c
+        return c, z
 
 
 class QStack(nn.Module):
@@ -398,7 +396,7 @@ class QStack(nn.Module):
             })
 
     def forward(self, x):
-        q = {'categorical': [None] * len(reg_categorical)}
+        q = {'categorical': [None] * self.reg_categorical}
         x = self.q_input(x)
         for i in range(self.reg_categorical):
             q['categorical'][i] = self.q_regularised['categorical'][i](x)
