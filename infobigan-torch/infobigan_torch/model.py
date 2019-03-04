@@ -33,6 +33,12 @@ class InfoBiGAN(object):
     latent_dim: int
         Dimensionality of the latent space. Currently, this is basically a
         vanilla BiGAN, so this only includes noise.
+    reg_categorical: tuple
+        List of level counts for uniformly categorically distributed variables
+        in the latent space.
+    reg_gaussian: int
+        Number of regularised normally distributed variables in the latent
+        space.
     """
     def __init__(self,
                  channels=(1, 128, 256, 512, 1024),
@@ -96,21 +102,24 @@ class InfoBiGAN(object):
 
         self.latent_dim = (
             latent_dim + sum(_listify(reg_categorical))+ reg_gaussian)
+        self.latent_noise = latent_dim
         self.manifest_dim = manifest_dim
+        self.reg_gaussian = reg_gaussian
+        self.reg_categorical = reg_categorical
         self.discriminator = DualDiscriminator(
             channels=channels, kernel_size=kernel_size, stride=stride,
             padding=padding, bias=bias, manifest_dim=manifest_dim,
-            latent_dim=latent_dim, reg_categorical=reg_categorical,
+            latent_dim=self.latent_dim, reg_categorical=reg_categorical,
             reg_gaussian=reg_gaussian)
         self.encoder = RegularisedEncoder(
             channels=channels, kernel_size=kernel_size, stride=stride,
             padding=padding, bias=bias, manifest_dim=manifest_dim,
-            hidden_dim=latent_dim, latent_noise_dim=latent_dim,
+            hidden_dim=self.latent_noise, latent_noise_dim=self.latent_noise,
             reg_categorical=reg_categorical, reg_gaussian=reg_gaussian)
         self.generator = DCTranspose(
             channels=channels[::-1], kernel_size=kernel_size[::-1],
             stride=stride[::-1], padding=padding[::-1], bias=bias[::-1],
-            latent_dim=latent_dim, target_dim=manifest_dim)
+            latent_dim=self.latent_dim, target_dim=manifest_dim)
 
     def train(self):
         self.discriminator.train()

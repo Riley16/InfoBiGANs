@@ -147,10 +147,9 @@ def config_probe_gaussian(latent_gaussian=2, latent_noise=100,
     return c, z
 
 
-def config_probe(latent_gaussian=2, categorical_levels=(10,),
-                 latent_noise=100, probe_dim=16):
-    """Generate a random probe in the latent space to qualitatively assess
-    generator performance.
+def config_sample(latent_gaussian=2, categorical_levels=(10,),
+                  latent_noise=100, dim=16):
+    """Generate a random sample in the latent space.
 
     Parameters
     ----------
@@ -162,10 +161,184 @@ def config_probe(latent_gaussian=2, categorical_levels=(10,),
         10 levels and another with 8 levels.
     latent_noise: int
         Dimensionality of the latent-space noise variables.
-    probe_dim: int
-        Total number of latent-space vectors to include in the probe.
+    dim: int
+        Total number of latent-space vectors to include in the sample.
     """
-    z = gaussian(probe_dim, latent_noise)
-    c = categorical(probe_dim, categorical_levels)
-    c['gaussian'] = gaussian(probe_dim, latent_gaussian)
+    z = gaussian(dim, latent_noise)
+    c = categorical(dim, categorical_levels)
+    c['gaussian'] = gaussian(dim, latent_gaussian)
     return c, z
+
+
+def config_infobigan_loss(batch_size):
+    """
+    Configure the loss functions for the InfoBiGAN.
+
+    THIS FUNCTION IS NOT EVEN CLOSE TO CORRECT. It's here as a temporary
+    placeholder until we get the correct loss functions.
+
+    Parameters
+    ----------
+    batch_size: int
+        Number of observations per batch.
+
+    Returns
+    -------
+    BCELoss
+        The binary cross-entropy loss function.
+    Tensor
+        Target indicating that the disciminator predicts the input (latent,
+        manifest) pair was processed by the generator.
+        This is the discriminator's target for generator-processed pairs and
+        the generator-encoder's target for encoder-processed pairs.
+    Tensor
+        Target indicating that the disciminator predicts the input (latent,
+        manifest) pair was processed by the encoder.
+        This is the discriminator's target for encoder-processed pairs and
+        the generator-encoder's target for generator-processed pairs.
+    """
+    loss = nn.BCELoss()
+    generator_target = torch.ones(batch_size, 1)
+    encoder_target = torch.zeros(batch_size, 1)
+    return loss, generator_target, encoder_target
+
+
+class InfoBiGANTrainer(Trainer):
+    """
+    Trainer class for an information maximising adversarially learned
+    inference network (InfoBiGAN).
+
+    Attributes
+    ----------
+    loader: DataLoader
+        DataLoader for the dataset to be used for training.
+    model: Module
+        InfoBiGAN to be trained.
+    batch_size: int
+        Number of observations per mini-batch.
+    learning_rate: float
+        Optimiser learning rate.
+    max_epoch: int
+        Number of epochs of training.
+    n_features: int
+        Total number of features in each observation of the input dataset.
+    data_dim: int
+        Dimensionality of the input dataset. Extended to three dimensions
+        (width, height, channels) to enable conversion to image.
+    """
+    def __init__(self,
+                 loader,
+                 model,
+                 batch_size=100,
+                 learning_rate=0.0002,
+                 max_epoch=200):
+        super(GANTrainer, self).__init__(loader, model, batch_size,
+                                         learning_rate, max_epoch)
+
+        self.optimiser_d = optim.Adam(self.model.discriminator.parameters(),
+                                      lr=self.learning_rate)
+        self.optimiser_g = optim.Adam(self.model.generator.parameters(),
+                                      lr=self.learning_rate)
+        self.optimiser_e = optim.Adam(self.model.encoder.parameters(),
+                                      lr=self.learning_rate)
+        (self.loss,
+         self.target_g,
+         self.target_e) = config_infobigan_loss(self.batch_size)
+
+    def train(self, log_progress=True, save_images=True, img_prefix='gan'):
+        """Train the GAN.
+
+        Parameters
+        ----------
+        . . .
+        """
+        self.model.train()
+        c, z = config_sample(latent_gaussian=self.model.reg_gaussian,
+                             categorical_levels=self.model.reg_categorical,
+                             latent_noise=self.latent_nois,
+                             dim=16)
+
+        for epoch in range(self.max_epoch):
+            loss_d_epoch = 0
+            loss_g_epoch = 0
+            loss_e_epoch = 0
+            for i, (batch_x, _) in enumerate(self.loader):
+                batch_cz =  config_sample(
+                    latent_gaussian=self.model.reg_gaussian,
+                    categorical_levels=self.model.reg_categorical,
+                    latent_noise=self.latent_nois,
+                    dim=self.batch_size)
+
+                generator_data = (
+                    batch_cz,
+                    self.model.generator(batch_cz).detach()
+                )
+                encoder_data = (
+                    self.model.encoder(batch_x).detach(),
+                    batch_x
+                )
+                error_d, _, _ = self.train_discriminator(
+                    generator_data, encoder_data)
+
+                generator_data = (
+                    batch_cz,
+                    self.model.generator(batch_cz)
+                )
+                encoder_data = (
+                    self.model.encoder(batch_x),
+                    batch_x
+                )
+                error_g, error_e = self.train_generator_encoder(
+                    generator_data, encoder_data)
+
+                loss_d_epoch += error_d
+                loss_g_epoch += error_g
+                loss_e_epoch += error_e
+
+    def train_discriminator(self, generator_data, encoder_data):
+        """Evaluate the error of the InfoBiGAN's discriminator network for a
+        single mini-batch of generator- and encoder-processed data.
+
+        Parameters
+        ----------
+        generator_data: Tensor
+            Mini-batch of observations sampled from the generator.
+        encoder_data: Tensor
+            Mini-batch of observations sampled from the encoder.
+        """
+        self.optimiser_d.zero_grad()
+
+        prediction_g = self.model.discriminator(generator_data)
+        error_g = self.loss(prediction_g, self.target_g)
+        error_g.backward()
+
+        prediction_e = self.model.discriminator(encoder_data)
+        error_e = self.loss(prediction_e, self.target_e)
+        error_e.backward()
+
+        self.optimiser_d.step()
+        return error_g + error_e, prediction_g, prediction_e
+
+    def train_generator_encoder(self, generator_data, encoder_data):
+        """Evaluate the error of the InfoBiGAN's generator and encoder
+        networks for a single mini-batch of fabricated data.
+
+        Parameters
+        ----------
+        fake_data: Tensor
+            Mini-batch of observations fabricated by the generator.
+        """
+        self.optimiser_g.zero_grad()
+        self.optimiser_e.zero_grad()
+
+        prediction_g = self.model.discriminator(generator_data)
+        error_g = self.loss(prediction_g, self.target_g)
+        error.backward()
+
+        prediction_e = self.model.discriminator(encoder_data)
+        error_e = self.loss(prediction_e, self.target_e)
+        error.backward()
+
+        self.optimiser_g.step()
+        self.optimiser_e.step()
+        return error_g, error_e
