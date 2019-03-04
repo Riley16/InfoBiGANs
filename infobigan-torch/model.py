@@ -15,11 +15,18 @@ from torch import nn #, optim
 eps = 1e-15
 
 
-def _listify(item, length):
-    if not (isinstance(item, tuple) or isinstance(item, list)):
-        return [item] * length
+def _listify(item, length=False):
+    if length:
+        if not (isinstance(item, tuple) or isinstance(item, list)):
+            return [item] * length
+        else:
+            return list(item)
     else:
-        return list(item)
+        if not (isinstance(item, tuple) or isinstance(item, list)):
+            return [item]
+        else:
+            return list(item)
+
 
 
 def _conv_out_size(input_size, kernels, strides, paddings):
@@ -46,7 +53,7 @@ class InfoBiGAN(object):
         InfoBiGAN's generator network, which learns the underlying
         distribution of a dataset through a minimax game played against the
         discriminator.
-    encoder: DCNetwork
+    encoder: RegularisedEncoder
         InfoBiGAN's inferential network, which learns the latent space
         encodings of a dataset through a minimax game played against the
         discriminator.
@@ -61,7 +68,9 @@ class InfoBiGAN(object):
                  padding=(3, 1, 1, 1),
                  bias=False,
                  manifest_dim=28,
-                 latent_dim=100):
+                 latent_dim=100,
+                 reg_categorical=(10,),
+                 reg_gaussian=2):
         """Initialise an information maximising adversarially learned
         inference network (InfoBiGAN).
 
@@ -94,6 +103,13 @@ class InfoBiGAN(object):
             Number of latent features that the generator network samples.
         manifest_dim: int
             Side length of the input image.
+        reg_categorical: tuple
+            List of level counts for uniformly categorically distributed
+            variables in the latent space. For instance, (10, 8) denotes one
+            variable with 10 levels and another with 8 levels.
+        reg_gaussian: int
+            Number of regularised normally distributed variables in the latent
+            space.
 
         If any of `kernel_size`, `stride`, `padding`, or `bias` is a tuple,
         it should be exactly as long as `channels`; in this case, the ith item
@@ -105,20 +121,23 @@ class InfoBiGAN(object):
         stride = _listify(stride, n_conv)
         bias = _listify(bias, n_conv)
 
+        self.latent_dim = (
+            latent_dim + sum(_listify(reg_categorical))+ reg_gaussian)
+        self.manifest_dim = manifest_dim
         self.discriminator = DualDiscriminator(
             channels=channels, kernel_size=kernel_size, stride=stride,
             padding=padding, bias=bias, manifest_dim=manifest_dim,
-            latent_dim=latent_dim)
-        self.encoder = DCNetwork(
+            latent_dim=latent_dim, reg_categorical=reg_categorical,
+            reg_gaussian=reg_gaussian)
+        self.encoder = RegularisedEncoder(
             channels=channels, kernel_size=kernel_size, stride=stride,
-            padding=padding, bias=bias, in_dim=manifest_dim,
-            out_dim=latent_dim)
+            padding=padding, bias=bias, manifest_dim=manifest_dim,
+            hidden_dim=latent_dim, latent_noise_dim=latent_dim,
+            reg_categorical=reg_categorical, reg_gaussian=reg_gaussian)
         self.generator = DCTranspose(
             channels=channels[::-1], kernel_size=kernel_size[::-1],
             stride=stride[::-1], padding=padding[::-1], bias=bias[::-1],
             latent_dim=latent_dim, target_dim=manifest_dim)
-        self.latent_dim = latent_dim
-        self.manifest_dim = manifest_dim
 
     def train(self):
         self.discriminator.train()
@@ -135,13 +154,10 @@ class InfoBiGAN(object):
         self.generator.zero_grad()
         self.discriminator.zero_grad()
 
-    def load_state_dict(self, params_g, params_e,
-                        params_d_z, params_d_x, params_d_xz):
+    def load_state_dict(self, params_g, params_e, params_d):
         self.encoder.load_state_dict(params_e)
         self.generator.load_state_dict(params_g)
-        self.discriminator.load_state_dict(params_z=params_d_z,
-                                           params_x=params_d_x,
-                                           params_xz=params_d_xz)
+        self.discriminator.load_state_dict(params_d=params_d)
 
 
 class DualDiscriminator(nn.Module):
@@ -159,7 +175,7 @@ class DualDiscriminator(nn.Module):
         manifest-space data and yields a decision regarding the provenance
         of the data pair.
     regulariser: QStack
-        . . . Not yet implemented . . .
+        Q distribution network for informational regularisation.
     """
     def __init__(self,
                  manifest_dim=28,
@@ -168,7 +184,9 @@ class DualDiscriminator(nn.Module):
                  kernel_size=4,
                  stride=2,
                  padding=(3, 1, 1, 1),
-                 bias=False):
+                 bias=False,
+                 reg_categorical=(10,),
+                 reg_gaussian=2):
         """Initialise a dual discriminator.
 
         Parameters
@@ -193,6 +211,12 @@ class DualDiscriminator(nn.Module):
             Indicates whether each convolutional filter in the image
             (manifest) representational network includes bias terms for each
             unit.
+        reg_categorical: tuple
+            List of level counts for uniformly categorically distributed
+            variables in the latent space. For instance, (10, 8) denotes one
+            variable with 10 levels and another with 8 levels.
+        reg_gaussian: int
+            Number of normally distributed variables in the latent space.
         """
         super(DualDiscriminator, self).__init__()
         self.x_discriminator = DCNetwork(
@@ -200,36 +224,110 @@ class DualDiscriminator(nn.Module):
             padding=padding, bias=bias, in_dim=manifest_dim,
             out_dim=latent_dim*2, final_act='leaky', embedded=(False, True))
         self.z_discriminator = DCNetwork(
-            channels=(latent_dim), fc=(latent_dim*2, latent_dim*2),
+            channels=(latent_dim,), fc=(latent_dim*2, latent_dim*2),
             kernel_size=1, stride=1, padding=0, bias=True, in_dim=1,
             out_dim=latent_dim*2, final_act='leaky', embedded=(False, True))
         self.zx_discriminator = DCNetwork(
-            channels=(latent_dim*4), fc=(latent_dim*4, latent_dim*4),
+            channels=(latent_dim*4,), fc=(latent_dim*4, latent_dim*4),
             kernel_size=1, stride=1, padding=0, bias=True, in_dim=1,
             out_dim=1, embedded=(True, False))
-
-    def train(self):
-        self.z_discriminator.train()
-        self.x_discriminator.train()
-        self.zx_discriminator.train()
-
-    def eval(self):
-        self.z_discriminator.eval()
-        self.x_discriminator.eval()
-        self.zx_discriminator.eval()
-
-    def load_state_dict(self, params_z, params_x, params_zx):
-        self.z_discriminator.load_state_dict(params_z)
-        self.x_discriminator.load_state_dict(params_x)
-        self.zx_discriminator.load_state_dict(params_zx)
+        self.regulariser = QStack(
+            reg_categorical=reg_categorical, reg_gaussian=reg_gaussian,
+            hidden_dim=latent_dim*2)
 
     def forward(self, z, x):
         z = self.z_discriminator(z)
         x = self.x_discriminator(x)
         zx = torch.cat([z, x], 1) + eps
         zx = self.zx_discriminator(zx)
-        return zx
+        reg = self.regulariser(x)
+        return zx, reg
 
+
+class RegularisedEncoder(nn.Module):
+    """
+    An encoder network that encodes the manifest-space data into a latent-
+    space representation that includes both regularised and noisy variables.
+
+    Attributes
+    ----------
+    conv: DCNetwork
+        The encoder's convolutional stack.
+    code: ModuleDict
+        The output layers of the encoder, which ensure that each distribution
+        is appropriately processed.
+    """
+    def __init__(self,
+                 channels=(1, 128, 256, 512, 1024),
+                 kernel_size=4,
+                 stride=2,
+                 padding=(3, 1, 1, 1),
+                 bias=False,
+                 manifest_dim=28,
+                 hidden_dim=256,
+                 reg_categorical=(10,),
+                 reg_gaussian=2,
+                 latent_noise_dim=100):
+        """Initialise an encoder network.
+
+        Parameters
+        ----------
+        channels: tuple
+            Tuple denoting number of channels in each convolutional layer.
+        kernel_size: int or tuple
+            Side length of convolutional kernel.
+        stride: int or tuple
+            Convolutional stride.
+        padding: int or tuple
+            Padding to be applied to the image during convolution.
+        bias: bool or tuple
+            Indicates whether each convolutional filter includes bias terms
+            for each unit.
+        manifest_dim: int
+            Side length of the input image.
+        hidden_dim: int
+            Number of features in the final layer before the encoding layer.
+        reg_categorical: tuple
+            List of level counts for uniformly categorically distributed
+            variables in the latent space. For instance, (10, 8) denotes one
+            variable with 10 levels and another with 8 levels.
+        reg_gaussian: int
+            Number of regularised normally distributed variables in the latent
+            space.
+        latent_noise_dim: int
+            Number of features in the latent space that are not regularised.
+        """
+        super(RegularisedEncoder, self).__init__()
+        self.conv = DCNetwork(
+            channels=channels, kernel_size=kernel_size, stride=stride,
+            padding=padding, bias=bias, in_dim=manifest_dim,
+            out_dim=hidden_dim, final_act='leaky', embedded=(False, True))
+        self.code = nn.ModuleDict()
+
+        self.code['z'] = nn.Conv2d(
+            in_channels=hidden_dim, out_channels=latent_noise_dim,
+            kernel_size=1, stride=1, padding=0, bias=True)
+        for i, levels in enumerate(reg_categorical):
+            self.code['cat{}'.format(i)] = nn.Sequential(
+                nn.Conv2d(
+                    in_channels=hidden_dim, out_channels=levels,
+                    kernel_size=1, stride=1, padding=0, bias=True),
+                nn.Softmax()
+            )
+        if reg_gaussian > 0:
+            self.code['gaussian'] = nn.Conv2d(
+                in_channels=hidden_dim, out_channels=reg_gaussian,
+                kernel_size=1, stride=1, padding=0, bias=True)
+
+    def forward(self, x):
+        c = {}
+        zc = self.conv(x)
+        z = self.code['z'](zc)
+        for i, levels in enumerate(reg_categorical):
+            c['cat{}'.format(i)] = self.code['cat{}'.format(i)](zc)
+        if reg_gaussian > 0:
+            c['gaussian'] = self.code['gaussian'](zc)
+        return z, c
 
 
 class DCArchitecture(nn.Module):
@@ -294,13 +392,9 @@ class DCArchitecture(nn.Module):
         (i + 1)th index of channels).
         """
         super(DCArchitecture, self).__init__()
+        channels = _listify(channels)
+        self.n_conv = len(channels) - 1
         self.conv = nn.ModuleList()
-        try:
-            channels = list(channels)
-            self.n_conv = len(channels) - 1
-        except TypeError:
-            channels = [channels]
-            self.n_conv = len(channels) - 1
 
         nonlinearity = _listify(nonlinearity, self.n_conv)
         kernel_size = _listify(kernel_size, self.n_conv)
@@ -428,12 +522,8 @@ class DCNetwork(DCArchitecture):
         it should be exactly as long as `channels`; in this case, the ith item
         denotes the parameter value for the ith convolutional layer.
         """
-        try:
-            channels = list(channels)
-            n_conv = len(channels) - 1
-        except TypeError:
-            channels = [channels]
-            n_conv = len(channels) - 1
+        channels = _listify(channels)
+        n_conv = len(channels) - 1
 
         fc = list(fc)
         n_fc = len(fc) + 1
@@ -485,7 +575,9 @@ class DCTranspose(DCArchitecture):
                  final_act='tanh',
                  embedded=(False, False),
                  latent_dim=100,
-                 target_dim=28):
+                 target_dim=28,
+                 reg_categorical=(10,),
+                 reg_gaussian=2):
         """Initialise a deep convolutional generator.
 
         Parameters
@@ -525,15 +617,11 @@ class DCTranspose(DCArchitecture):
         it should be exactly as long as `channels`; in this case, the ith item
         denotes the parameter value for the ith convolutional layer.
         """
-        try:
-            channels = list(channels)
-            n_conv = len(channels) - 1
-        except TypeError:
-            channels = [channels]
-            n_conv = len(channels) - 1
-
+        channels = _listify(channels)
+        n_conv = len(channels) - 1
         fc = list(fc)
         n_fc = len(fc) + 1
+
         conv_in_size = _conv_out_size(target_dim,
                                       _listify(kernel_size, n_conv)[::-1],
                                       _listify(stride, n_conv)[::-1],
@@ -570,29 +658,36 @@ class QStack(nn.Module):
     q_regularised: ModuleDict
         Dictionary of modules that yield distributional parameters for the
         compressible input c.
-    latent_categorical: int
-        Number of regularised categorical variables in the latent space.
-    latent_gaussian: int
+    reg_categorical: tuple
+        List of level counts for uniformly categorically distributed variables
+        in the latent space. For instance, (10, 8) denotes one variable with
+        10 levels and another with 8 levels.
+    reg_gaussian: int
         Number of regularised Gaussian variables in the latent space.
     """
     def __init__(self,
-                 latent_categorical,
-                 latent_gaussian,
+                 reg_categorical=(10,),
+                 reg_gaussian=2,
                  hidden_dim=100):
         """Initialise a Q stack.
 
         Parameters
         ----------
-        latent_categorical: tuple
+        reg_categorical: tuple
             List of level counts for uniformly categorically distributed
-            variables in c. For instance, (10, 8) denotes one variable with 10
-            levels and another with 8 levels.
-        latent_gaussian: int
-            Number of normally distributed variables in c.
+            variables in the latent space. For instance, (10, 8) denotes one
+            variable with 10 levels and another with 8 levels.
+        reg_gaussian: int
+            Number of regularised normally distributed variables in the latent
+            space.
         hidden_dim: int
             Dimensionality of the hidden layer.
         """
         super(QStack, self).__init__()
+        reg_categorical = list(reg_categorical)
+        self.q_regularised = nn.ModuleDict()
+        self.reg_gaussian = reg_gaussian
+        self.reg_categorical = len(reg_categorical)
         self.q_input = DCNetwork(
             channels=(hidden_dim),
             kernel_size=1,
@@ -604,33 +699,29 @@ class QStack(nn.Module):
             in_dim=1,
             out_dim=hidden_dim
         )
-        self.q_regularised = nn.ModuleDict()
-        self.latent_gaussian = latent_gaussian
-        self.latent_categorical = len(latent_categorical)
-        for i, levels in enumerate(latent_categorical):
+        for i, levels in enumerate(reg_categorical):
             self.q_regularised['cat{}'.format(i)] = nn.Sequential(
                 nn.Conv2d(
-                    in_channels=hidden_dim,
-                    out_channels=levels, kernel_size=1,
-                    stride=1, padding=0, bias=True),
+                    in_channels=hidden_dim, out_channels=levels,
+                    kernel_size=1, stride=1, padding=0, bias=True),
                 nn.Softmax()
             )
-        if latent_gaussian > 0:
+        if reg_gaussian > 0:
             self.q_regularised['gaussian'] = nn.ModuleDict({
                 'mean': nn.Conv2d(
-                    in_channels=hidden_dim, out_channels=latent_gaussian,
+                    in_channels=hidden_dim, out_channels=reg_gaussian,
                     kernel_size=1, stride=1, padding=0, bias=True),
                 'logstd': nn.Conv2d(
-                    in_channels=hidden_dim, out_channels=latent_gaussian,
+                    in_channels=hidden_dim, out_channels=reg_gaussian,
                     kernel_size=1, stride=1, padding=0, bias=True)
             })
 
     def forward(self, x):
         c = {}
         x = self.q_input(x)
-        for i in range(self.latent_categorical):
+        for i in range(self.reg_categorical):
             c['cat{}'.format(i)] = self.q_regularised['cat{}'.format(i)](x)
-        if self.latent_gaussian > 0:
+        if self.reg_gaussian > 0:
             c['gaussian'] = {}
             c['gaussian']['mean'] = self.q_regularised['gaussian']['mean'](x)
             c['gaussian']['logstd'] = (
