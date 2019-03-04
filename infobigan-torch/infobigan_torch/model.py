@@ -22,7 +22,7 @@ class InfoBiGAN(object):
         InfoBiGAN's discriminator network, which is presented a set of
         latent space-manifest space pairs and determines whether each
         pair was produced by the encoder or the generator.
-    generator: DCTranspose
+    generator: RegularisedGenerator
         InfoBiGAN's generator network, which learns the underlying
         distribution of a dataset through a minimax game played against the
         discriminator.
@@ -116,7 +116,7 @@ class InfoBiGAN(object):
             padding=padding, bias=bias, manifest_dim=manifest_dim,
             hidden_dim=self.latent_noise, latent_noise_dim=self.latent_noise,
             reg_categorical=reg_categorical, reg_gaussian=reg_gaussian)
-        self.generator = DCTranspose(
+        self.generator = RegularisedGenerator(
             channels=channels[::-1], kernel_size=kernel_size[::-1],
             stride=stride[::-1], padding=padding[::-1], bias=bias[::-1],
             latent_dim=self.latent_dim, target_dim=manifest_dim)
@@ -218,12 +218,29 @@ class DualDiscriminator(nn.Module):
             hidden_dim=latent_dim*2)
 
     def forward(self, z, x):
+        if isinstance(z, tuple):
+            z = torch.cat(
+                [z[1], z[0]['gaussian'], *z[0]['categorical']], 1)
         z = self.z_discriminator(z)
         x = self.x_discriminator(x)
         zx = torch.cat([z, x], 1) + eps
         zx = self.zx_discriminator(zx)
-        reg = self.regulariser(x)
-        return zx, reg
+        q = self.regulariser(x)
+        return zx, q
+
+
+class RegularisedGenerator(DCTranspose):
+    """A deep transpose convolutional network that parses regularised and
+    non-regularised variables.
+    """
+    def __init__(*args, **kwargs):
+        super(RegularisedGenerator, self).__init__(*args, **kwargs)
+
+    def forward(self, zc):
+        if isinstance(zc, tuple):
+            zc = torch.cat(
+                [zc[1], zc[0]['gaussian'], *zc[0]['categorical']], 1)
+        return super(RegularisedGenerator, self).forward(zc)
 
 
 class RegularisedEncoder(nn.Module):
@@ -289,24 +306,25 @@ class RegularisedEncoder(nn.Module):
         self.code['z'] = nn.Conv2d(
             in_channels=hidden_dim, out_channels=latent_noise_dim,
             kernel_size=1, stride=1, padding=0, bias=True)
+        self.code['categorical'] = ModuleList()
         for i, levels in enumerate(reg_categorical):
-            self.code['cat{}'.format(i)] = nn.Sequential(
+            self.code['categorical'].append(nn.Sequential(
                 nn.Conv2d(
                     in_channels=hidden_dim, out_channels=levels,
                     kernel_size=1, stride=1, padding=0, bias=True),
                 nn.Softmax()
-            )
+            ))
         if reg_gaussian > 0:
             self.code['gaussian'] = nn.Conv2d(
                 in_channels=hidden_dim, out_channels=reg_gaussian,
                 kernel_size=1, stride=1, padding=0, bias=True)
 
     def forward(self, x):
-        c = {}
+        c = {'categorical': [None] * len(reg_categorical)}
         zc = self.conv(x)
         z = self.code['z'](zc)
-        for i, levels in enumerate(reg_categorical):
-            c['cat{}'.format(i)] = self.code['cat{}'.format(i)](zc)
+        for i in range(len(reg_categorical)):
+            c['categorical'][i] = self.code['categorical'][i](zc)
         if reg_gaussian > 0:
             c['gaussian'] = self.code['gaussian'](zc)
         return z, c
@@ -361,13 +379,14 @@ class QStack(nn.Module):
             in_dim=1,
             out_dim=hidden_dim
         )
-        for i, levels in enumerate(reg_categorical):
-            self.q_regularised['cat{}'.format(i)] = nn.Sequential(
+        self.q_regularised['categorical'] = nn.ModuleList()
+        for levels in reg_categorical:
+            self.q_regularised['categorical'].append(nn.Sequential(
                 nn.Conv2d(
                     in_channels=hidden_dim, out_channels=levels,
                     kernel_size=1, stride=1, padding=0, bias=True),
                 nn.Softmax()
-            )
+            ))
         if reg_gaussian > 0:
             self.q_regularised['gaussian'] = nn.ModuleDict({
                 'mean': nn.Conv2d(
@@ -379,13 +398,13 @@ class QStack(nn.Module):
             })
 
     def forward(self, x):
-        c = {}
+        q = {'categorical': [None] * len(reg_categorical)}
         x = self.q_input(x)
         for i in range(self.reg_categorical):
-            c['cat{}'.format(i)] = self.q_regularised['cat{}'.format(i)](x)
+            q['categorical'][i] = self.q_regularised['categorical'][i](x)
         if self.reg_gaussian > 0:
-            c['gaussian'] = {}
-            c['gaussian']['mean'] = self.q_regularised['gaussian']['mean'](x)
-            c['gaussian']['logstd'] = (
+            q['gaussian'] = {}
+            q['gaussian']['mean'] = self.q_regularised['gaussian']['mean'](x)
+            q['gaussian']['logstd'] = (
                 self.q_regularised['gaussian']['logstd'](x))
-        return c
+        return q

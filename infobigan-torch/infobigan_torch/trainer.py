@@ -64,25 +64,25 @@ def categorical(batch_size, levels=(10,), index=None):
         the categorical variable that should be fully sampled while the others
         are clamped.
     """
-    c = {}
+    c = [None] * len(levels)
     all_levels = (batch_size == 'levels')
     if all_levels:
         batch_size = levels[index]
     for i, n_levels in enumerate(levels):
         if all_levels:
             if index == i:
-                c['cat{}'.format(i)] = torch.eye(n_levels)
+                c[i] = torch.eye(n_levels)
             else:
                 distr = torch.full((1, n_levels), 1/n_levels)
                 sample = torch.multinomial(distr, 1).item()
                 vectors = torch.zeros(1, n_levels)
                 vectors[0, sample] = 1
-                c['cat{}'.format(i)] = vectors.expand(batch_size, -1)
+                c[i] = vectors.expand(batch_size, -1)
         else:
             distr = torch.full((1, n_levels), 1/n_levels)
             samples = torch.multinomial(distr, batch_size, replacement=True)
             vectors = torch.zeros(batch_size, n_levels)
-            c['cat{}'.format(i)] = vectors.scatter_(1, samples.t(), 1)
+            c[i] = vectors.scatter_(1, samples.t(), 1)
     return c
 
 
@@ -107,8 +107,9 @@ def config_probe_categorical(categorical_levels=(10,), index=0,
     latent_gaussian: int
         Dimensionality of the regularised latent-space Gaussian variables.
     """
+    c = {}
     probe_dim = categorical_levels[index]
-    c = categorical(
+    c['categorical'] = categorical(
         batch_size='levels', levels=categorical_levels, index=index)
     z = gaussian(1, latent_noise).expand(probe_dim, -1)
     c['gaussian'] = gaussian(1, latent_gaussian).expand(probe_dim, -1)
@@ -138,11 +139,11 @@ def config_probe_gaussian(latent_gaussian=2, latent_noise=100,
     probe_values: list
         Specifies the values of the given variable to be probed.
     """
+    c = {}
     probe_dim = len(gaussian_probe_default)
     z = gaussian(1, latent_noise).expand(probe_dim, -1)
-    c = categorical(batch_size=1, levels=categorical_levels)
-    for k, v in c.items():
-        c[k] = c[k].expand(probe_dim, -1)
+    c['categorical'] = categorical(batch_size=1, levels=categorical_levels)
+    c['categorical'] = [i.expand(probe_dim, -1) for i in c['categorical']]
     c['gaussian'] = gaussian(probe_values, latent_gaussian, index)
     return c, z
 
@@ -165,7 +166,7 @@ def config_sample(latent_gaussian=2, categorical_levels=(10,),
         Total number of latent-space vectors to include in the sample.
     """
     z = gaussian(dim, latent_noise)
-    c = categorical(dim, categorical_levels)
+    c['categorical'] = categorical(dim, categorical_levels)
     c['gaussian'] = gaussian(dim, latent_gaussian)
     return c, z
 
@@ -308,11 +309,11 @@ class InfoBiGANTrainer(Trainer):
         """
         self.optimiser_d.zero_grad()
 
-        prediction_g = self.model.discriminator(generator_data)
+        prediction_g, q_g = self.model.discriminator(generator_data)
         error_g = self.loss(prediction_g, self.target_g)
         error_g.backward()
 
-        prediction_e = self.model.discriminator(encoder_data)
+        prediction_e, q_e = self.model.discriminator(encoder_data)
         error_e = self.loss(prediction_e, self.target_e)
         error_e.backward()
 
@@ -331,11 +332,11 @@ class InfoBiGANTrainer(Trainer):
         self.optimiser_g.zero_grad()
         self.optimiser_e.zero_grad()
 
-        prediction_g = self.model.discriminator(generator_data)
+        prediction_g, q_g = self.model.discriminator(generator_data)
         error_g = self.loss(prediction_g, self.target_g)
         error.backward()
 
-        prediction_e = self.model.discriminator(encoder_data)
+        prediction_e, q_e = self.model.discriminator(encoder_data)
         error_e = self.loss(prediction_e, self.target_e)
         error.backward()
 
