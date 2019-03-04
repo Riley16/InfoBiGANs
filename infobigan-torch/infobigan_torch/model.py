@@ -7,11 +7,9 @@ InfoBiGAN
 Information maximising adversarially learned inference network
 """
 import torch
-from torch import nn #, optim
+from torch import nn
 from .conv import DCTranspose, DCNetwork
 from .utils import eps, _listify
-#from pytorchure.train.trainer import Trainer
-#from pytorchure.utils import thumb_grid, animate_gif
 
 
 class InfoBiGAN(object):
@@ -40,7 +38,7 @@ class InfoBiGAN(object):
                  channels=(1, 128, 256, 512, 1024),
                  kernel_size=4,
                  stride=2,
-                 padding=(3, 1, 1, 1),
+                 padding=(2, 2, 1, 1),
                  bias=False,
                  manifest_dim=28,
                  latent_dim=100,
@@ -158,7 +156,7 @@ class DualDiscriminator(nn.Module):
                  channels=(1, 128, 256, 512, 1024),
                  kernel_size=4,
                  stride=2,
-                 padding=(3, 1, 1, 1),
+                 padding=(2, 2, 1, 1),
                  bias=False,
                  reg_categorical=(10,),
                  reg_gaussian=2):
@@ -236,7 +234,7 @@ class RegularisedEncoder(nn.Module):
                  channels=(1, 128, 256, 512, 1024),
                  kernel_size=4,
                  stride=2,
-                 padding=(3, 1, 1, 1),
+                 padding=(2, 2, 1, 1),
                  bias=False,
                  manifest_dim=28,
                  hidden_dim=256,

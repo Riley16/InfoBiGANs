@@ -37,7 +37,7 @@ class DCArchitecture(nn.Module):
                  kernel_size=(4, 4, 4, 4, 1),
                  batch_norm=(False, True, True, True, False),
                  stride=(2, 2, 2, 2, 1),
-                 padding=(3, 1, 1, 1, 0),
+                 padding=(2, 2, 1, 1, 0),
                  bias=(False, False, False, False, True),
                  leak=0.2):
         """Initialise a deep convolutional network.
@@ -163,7 +163,7 @@ class DCNetwork(DCArchitecture):
                  fc=(),
                  kernel_size=4,
                  stride=2,
-                 padding=(3, 1, 1, 1),
+                 padding=(2, 2, 1, 1),
                  bias=False,
                  leak=0.2,
                  final_act='sigmoid',
@@ -261,7 +261,7 @@ class DCTranspose(DCArchitecture):
                  fc=(),
                  kernel_size=4,
                  stride=2,
-                 padding=(1, 1, 1, 3),
+                 padding=(1, 1, 2, 2),
                  bias=False,
                  final_act='tanh',
                  embedded=(False, False),
