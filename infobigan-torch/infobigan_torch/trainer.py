@@ -200,9 +200,27 @@ def config_infobigan_loss(batch_size):
         the generator-encoder's target for generator-processed pairs.
     """
     loss = nn.BCELoss()
-    generator_target = torch.ones(batch_size, 1)
-    encoder_target = torch.zeros(batch_size, 1)
+    generator_target = torch.ones(batch_size, 1, 1, 1)
+    encoder_target = torch.zeros(batch_size, 1, 1, 1)
     return loss, generator_target, encoder_target
+
+
+def make_smooth_targets(batch_size, epoch, max_epoch, max_sigma=0.2):
+    """Some crude and poorly researched label smoothing, because the
+    discriminator is too good at this game. This smooths real image labels,
+    with some probability of a label flip. Smoothing and flip probability
+    decrease as training progresses.
+    """
+    prob_label_flip = 1 / (2 * epoch)
+    label_flip = (torch.rand(batch_size, 1, 1, 1).abs_() 
+                  < prob_label_flip).float()
+    noise_sigma = -max_sigma/max_epoch * epoch + max_sigma
+    noise = (noise_sigma * torch.randn(batch_size, 1, 1, 1).abs_()
+             * (1 - label_flip))
+    generator_target = torch.ones(batch_size, 1, 1, 1)
+    encoder_target = label_flip + noise
+
+    return generator_target, encoder_target
 
 
 class InfoBiGANTrainer(Trainer):
@@ -233,12 +251,12 @@ class InfoBiGANTrainer(Trainer):
                  model,
                  batch_size=100,
                  learning_rate=0.0002,
-                 max_epoch=200):
+                 max_epoch=20):
         super(InfoBiGANTrainer, self).__init__(loader, model, batch_size,
                                                learning_rate, max_epoch)
 
         self.optimiser_d = optim.Adam(self.model.discriminator.parameters(),
-                                      lr=self.learning_rate)
+                                      lr=self.learning_rate/2)
         self.optimiser_g = optim.Adam(self.model.generator.parameters(),
                                       lr=self.learning_rate)
         self.optimiser_e = optim.Adam(self.model.encoder.parameters(),
@@ -247,7 +265,8 @@ class InfoBiGANTrainer(Trainer):
          self.target_g,
          self.target_e) = config_infobigan_loss(self.batch_size)
 
-    def train(self, log_progress=True, save_images=True, img_prefix='gan'):
+    def train(self, log_progress=True, save_images=True,
+              log_interval=10, img_prefix='infobigan'):
         """Train the InfoBiGAN.
 
         Parameters
@@ -255,49 +274,51 @@ class InfoBiGANTrainer(Trainer):
         . . .
         """
         self.model.train()
-        c, z = config_sample(latent_gaussian=self.model.reg_gaussian,
-                             categorical_levels=self.model.reg_categorical,
-                             latent_noise=self.model.latent_noise,
-                             dim=16)
+        c_probe, z_probe = config_sample(
+            latent_gaussian=self.model.reg_gaussian,
+            categorical_levels=self.model.reg_categorical,
+            latent_noise=self.model.latent_noise,
+            dim=16)
+        if save_images:
+            save = -1
+            image_inst = '{}'.format(img_prefix) + '_{epoch:03d}.png'
+            image_inst_f = '{}'.format(img_prefix) + '_{epoch}.png'
+            image_out = '{}.gif'.format(img_prefix)
+            self._save_images(c_probe, z_probe, save, image_inst)
 
         for epoch in range(self.max_epoch):
             loss_d_epoch = 0
             loss_g_epoch = 0
             loss_e_epoch = 0
-            for i, (batch_x, _) in enumerate(self.loader):
-                batch_cz =  config_sample(
+            for i, (x, _) in enumerate(self.loader):
+                c, z =  config_sample(
                     latent_gaussian=self.model.reg_gaussian,
                     categorical_levels=self.model.reg_categorical,
                     latent_noise=self.model.latent_noise,
                     dim=self.batch_size)
 
-                x_hat = self.model.generator(batch_cz)
-                c_hat, z_hat = self.model.encoder(batch_x)
-                generator_data = (
-                    batch_cz,
-                    x_hat.detach()
-                )
-                encoder_data = (
-                    (self._detached(c_hat), z_hat.detach()),
-                    batch_x
-                )
+                x_hat = self.model.generator((c, z)).detach()
+                c_hat, z_hat = self._detached(*self.model.encoder(x))
                 error_d, _, _ = self.train_discriminator(
-                    generator_data, encoder_data)
+                    *self._generator_encoder_data(c, z, x,
+                                                  c_hat, z_hat, x_hat))
 
-                generator_data = (
-                    batch_cz,
-                    x_hat
-                )
-                encoder_data = (
-                    (c_hat, z_hat),
-                    batch_x
-                )
+                x_hat = self.model.generator((c, z))
+                c_hat, z_hat = self.model.encoder(x)
                 error_g, error_e = self.train_generator_encoder(
-                    generator_data, encoder_data)
-
+                    *self._generator_encoder_data(c, z, x,
+                                                  c_hat, z_hat, x_hat))
                 loss_d_epoch += error_d
                 loss_g_epoch += error_g
                 loss_e_epoch += error_e
+
+                if log_progress and (i % log_interval == 0):
+                    self.batch_report(i, epoch, error_d, 'Discriminator')
+                    self.batch_report(i, epoch, error_g, 'Generator')
+                    self.batch_report(i, epoch, error_e, 'Encoder')
+                if save_images and (i % log_interval == 0):
+                    save += 1
+                    self._save_images(c_probe, z_probe, save, image_inst)
 
     def train_discriminator(self, generator_data, encoder_data):
         """Evaluate the error of the InfoBiGAN's discriminator network for a
@@ -335,22 +356,61 @@ class InfoBiGANTrainer(Trainer):
             Mini-batch of observations sampled from the encoder.
         """
         self.optimiser_g.zero_grad()
-        self.optimiser_e.zero_grad()
-
         prediction_g, q_g = self.model.discriminator(*generator_data)
-        error_g = self.loss(prediction_g, self.target_g)
+        error_g = self.loss(prediction_g, self.target_e)
         error_g.backward()
-
-        prediction_e, q_e = self.model.discriminator(*encoder_data)
-        error_e = self.loss(prediction_e, self.target_e)
-        error_e.backward()
-
         self.optimiser_g.step()
+
+        self.optimiser_e.zero_grad()
+        prediction_e, q_e = self.model.discriminator(*encoder_data)
+        error_e = self.loss(prediction_e, self.target_g)
+        error_e.backward()
         self.optimiser_e.step()
+
         return error_g, error_e
 
-    def _detached(self, c):
+    def _detached(self, c, z):
         return {
             'categorical': [i.detach() for i in c['categorical']],
             'gaussian': c['gaussian'].detach()
-        }
+        }, z.detach()
+
+    def _generator_encoder_data(self, c, z, x, c_hat, z_hat, x_hat):
+        generator_data = (
+            (c, z),
+            x_hat
+        )
+        encoder_data = (
+            (c_hat, z_hat),
+            x
+        )
+        return generator_data, encoder_data
+
+    def batch_report(self, batch, epoch, loss, name=''):
+        """Print a report on the current progress of training.
+
+        Parameters
+        ----------
+        epoch: int
+            Current epoch.
+        data: Tensor
+            Tensor containing all data for the current mini-batch.
+        loss: Tensor
+            Output of the loss function.
+        name: str
+            Name of the loss function (if there is more than one for the
+            current network).
+        """
+        print('Batch [{}/{} ({:.0f}%)]\tEpoch [{}/{} ({:.0f}%)]\t'
+              '{} Loss [{:.6f}]'.format(
+                  batch + 1, len(self.loader),
+                  100 * (batch + 1) / len(self.loader),
+                  epoch + 1, self.max_epoch,
+                  100 * (epoch + 1) / self.max_epoch,
+                  name, loss.item()))
+
+    def _save_images(self, c_probe, z_probe, save, image_fmt):
+        """Save thumbnails of images generated during training."""
+        probe_gen = self.model.generator((c_probe, z_probe))
+        thumb_grid(probe_gen, save=True,
+                   file=image_fmt.format(epoch=save + 1))

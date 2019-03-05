@@ -310,7 +310,7 @@ class RegularisedEncoder(nn.Module):
                 nn.Conv2d(
                     in_channels=hidden_dim, out_channels=levels,
                     kernel_size=1, stride=1, padding=0, bias=True),
-                nn.Softmax()
+                nn.Softmax(dim=1)
             ))
         if reg_gaussian > 0:
             self.code['gaussian'] = nn.Conv2d(
@@ -383,7 +383,7 @@ class QStack(nn.Module):
                 nn.Conv2d(
                     in_channels=hidden_dim, out_channels=levels,
                     kernel_size=1, stride=1, padding=0, bias=True),
-                nn.Softmax()
+                nn.Softmax(dim=1)
             ))
         if reg_gaussian > 0:
             self.q_regularised['gaussian'] = nn.ModuleDict({
