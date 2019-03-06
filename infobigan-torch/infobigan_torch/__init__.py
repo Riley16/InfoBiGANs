@@ -4,3 +4,4 @@
 
 from .model import InfoBiGAN
 from .trainer import InfoBiGANTrainer
+from .data.loaders import load_mnist

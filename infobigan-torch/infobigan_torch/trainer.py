@@ -9,9 +9,8 @@ Trainer class for the InfoBiGAN
 import torch
 from torch import nn, optim
 from .conv import DCTranspose, DCNetwork
-from .utils import eps, _listify
-from pytorchure.train.trainer import Trainer
-from pytorchure.utils import thumb_grid, animate_gif
+from .utils.utils import thumb_grid, animate_gif
+from .utils.trainer import Trainer
 
 
 gaussian_probe_default = (-2, -1.5, -1, -0.5, 0, 0.5, 1, 1.5, 2)
@@ -205,24 +204,6 @@ def config_infobigan_loss(batch_size):
     return loss, generator_target, encoder_target
 
 
-def make_smooth_targets(batch_size, epoch, max_epoch, max_sigma=0.2):
-    """Some crude and poorly researched label smoothing, because the
-    discriminator is too good at this game. This smooths real image labels,
-    with some probability of a label flip. Smoothing and flip probability
-    decrease as training progresses.
-    """
-    prob_label_flip = 1 / (2 * epoch)
-    label_flip = (torch.rand(batch_size, 1, 1, 1).abs_() 
-                  < prob_label_flip).float()
-    noise_sigma = -max_sigma/max_epoch * epoch + max_sigma
-    noise = (noise_sigma * torch.randn(batch_size, 1, 1, 1).abs_()
-             * (1 - label_flip))
-    generator_target = torch.ones(batch_size, 1, 1, 1)
-    encoder_target = label_flip + noise
-
-    return generator_target, encoder_target
-
-
 class InfoBiGANTrainer(Trainer):
     """
     Trainer class for an information maximising adversarially learned
@@ -266,7 +247,7 @@ class InfoBiGANTrainer(Trainer):
          self.target_e) = config_infobigan_loss(self.batch_size)
 
     def train(self, log_progress=True, save_images=True,
-              log_interval=10, img_prefix='infobigan'):
+              log_interval=100, img_prefix='infobigan'):
         """Train the InfoBiGAN.
 
         Parameters
@@ -290,6 +271,7 @@ class InfoBiGANTrainer(Trainer):
             loss_d_epoch = 0
             loss_g_epoch = 0
             loss_e_epoch = 0
+            self.make_smooth_targets(epoch + 1)
             for i, (x, _) in enumerate(self.loader):
                 c, z =  config_sample(
                     latent_gaussian=self.model.reg_gaussian,
@@ -368,6 +350,21 @@ class InfoBiGANTrainer(Trainer):
         self.optimiser_e.step()
 
         return error_g, error_e
+
+    def make_smooth_targets(self, epoch, max_sigma=0.2):
+        """Some crude and poorly researched label smoothing, because the
+        discriminator is too good at this game. This smooths real image
+        labels, with some probability of a label flip. Smoothing and flip
+        probability decrease as training progresses.
+        """
+        prob_label_flip = 1 / (2 * epoch)
+        label_flip = (torch.rand(self.batch_size, 1, 1, 1).abs_()
+                      < prob_label_flip).float()
+        noise_sigma = -max_sigma/self.max_epoch * epoch + max_sigma
+        noise = (noise_sigma * torch.randn(self.batch_size, 1, 1, 1).abs_()
+                 * (1 - label_flip))
+        self.target_gd = torch.ones(self.batch_size, 1, 1, 1)
+        self.target_ed = label_flip + noise
 
     def _detached(self, c, z):
         return {

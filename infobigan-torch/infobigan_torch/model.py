@@ -9,7 +9,7 @@ Information maximising adversarially learned inference network
 import torch
 from torch import nn
 from .conv import DCTranspose, DCNetwork
-from .utils import eps, _listify
+from .utils.utils import eps, _listify
 
 
 class InfoBiGAN(object):
