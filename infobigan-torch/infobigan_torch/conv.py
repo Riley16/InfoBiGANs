@@ -8,7 +8,7 @@ Interfaces for building simple convolutional neural networks.
 """
 import torch
 from torch import nn
-from .utils import _listify
+from .utils.utils import _listify
 
 
 def _conv_out_size(input_size, kernels, strides, paddings):
