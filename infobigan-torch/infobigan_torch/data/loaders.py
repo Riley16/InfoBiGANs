@@ -10,7 +10,7 @@ from os.path import dirname
 
 
 def load_mnist(batch_size=100, train=True,
-                     renorm_mean=0.5, renorm_std=0.5):
+               renorm_mean=0.5, renorm_std=0.5):
     """Load the MNIST dataset into memory.
 
     Parameters
@@ -47,8 +47,8 @@ def load_mnist(batch_size=100, train=True,
     """
     normalise_data = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize((renorm_mean, renorm_mean, renorm_mean),
-                             (renorm_std, renorm_std, renorm_std))
+        transforms.Normalize(mean=[renorm_mean],
+                             std=[renorm_std])
     ])
     mnist_dir = '{}/mnist/'.format(dirname(__file__))
 

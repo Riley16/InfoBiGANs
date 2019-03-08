@@ -131,6 +131,11 @@ class InfoBiGAN(object):
         self.generator.eval()
         self.encoder.eval()
 
+    def cuda(self):
+        self.discriminator.cuda()
+        self.generator.cuda()
+        self.encoder.cuda()
+
     def load_state_dict(self, params_g, params_e, params_d):
         self.encoder.load_state_dict(params_e)
         self.generator.load_state_dict(params_g)
