@@ -1,0 +1,9 @@
+setup.py
+infobigan_torch/__init__.py
+infobigan_torch/conv.py
+infobigan_torch/model.py
+infobigan_torch/trainer.py
+infobigan_torch.egg-info/PKG-INFO
+infobigan_torch.egg-info/SOURCES.txt
+infobigan_torch.egg-info/dependency_links.txt
+infobigan_torch.egg-info/top_level.txt

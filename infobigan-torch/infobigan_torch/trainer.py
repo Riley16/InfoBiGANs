@@ -36,11 +36,42 @@ def gaussian(batch_size, latent_dim=100, index=None):
     if index is not None:
         values = batch_size
         batch_size = len(batch_size)
+        # WON'T THIS SAMPLE ALL OF THE OTHER VARIABLES?
         samples = torch.randn(1, latent_dim).repeat(batch_size, 1)
+        # WON'T THIS CLAMP THE SAMPLE AT INDEX, INSTEAD OF THE SAMPLES FOR THE OTHER VARIABLES AS IN THE DESCRIPTION?
         samples[:, index] = torch.Tensor(values)
         return samples
     else:
         return torch.randn(batch_size, latent_dim)
+
+
+def uniform(batch_size, latent_dim=100, index=None):
+    """
+    Generate a 1D vector sampled from a uniform distribution.
+
+    Parameters
+    ----------
+    batch_size: int or list
+        Number of vectors to generate. If this is a list, it instead indicates
+        the values to sample the distribution of the variable specified by
+        `index`.
+    latent_dim: int
+        Number of latent features per vector.
+    index: int
+        Only used if `batch_size` is a list. Indicates the index of the
+        variable that should be sampled at the specified values while the
+        remaining variables are clamped.
+    """
+    if index is not None:
+        values = batch_size
+        batch_size = len(batch_size)
+        # WON'T THIS SAMPLE ALL OF THE OTHER VARIABLES?
+        samples = torch.rand(1, latent_dim).repeat(batch_size, 1) * -2 + 1
+        # WON'T THIS CLAMP THE SAMPLE AT INDEX, INSTEAD OF THE SAMPLES FOR THE OTHER VARIABLES AS IN THE DESCRIPTION?
+        samples[:, index] = torch.Tensor(values)
+        return samples
+    else:
+        return torch.rand(batch_size, latent_dim) * -2 + 1
 
 
 def categorical(batch_size, levels=(10,), index=None):
@@ -165,7 +196,8 @@ def config_sample(latent_gaussian=2, categorical_levels=(10,),
         Total number of latent-space vectors to include in the sample.
     """
     c = {}
-    z = gaussian(dim, latent_noise)
+    # z = gaussian(dim, latent_noise)
+    z = uniform(dim, latent_noise)
     c['categorical'] = categorical(dim, categorical_levels)
     c['gaussian'] = gaussian(dim, latent_gaussian)
     return c, z
@@ -188,12 +220,12 @@ def config_infobigan_loss(batch_size):
     BCELoss
         The binary cross-entropy loss function.
     Tensor
-        Target indicating that the disciminator predicts the input (latent,
+        Target indicating that the discriminator predicts the input (latent,
         manifest) pair was processed by the generator.
         This is the discriminator's target for generator-processed pairs and
         the generator-encoder's target for encoder-processed pairs.
     Tensor
-        Target indicating that the disciminator predicts the input (latent,
+        Target indicating that the discriminator predicts the input (latent,
         manifest) pair was processed by the encoder.
         This is the discriminator's target for encoder-processed pairs and
         the generator-encoder's target for generator-processed pairs.
@@ -273,31 +305,48 @@ class InfoBiGANTrainer(Trainer):
             loss_e_epoch = 0
             self.make_smooth_targets(epoch + 1)
             for i, (x, _) in enumerate(self.loader):
-                c, z =  config_sample(
+                c, z = config_sample(
                     latent_gaussian=self.model.reg_gaussian,
                     categorical_levels=self.model.reg_categorical,
                     latent_noise=self.model.latent_noise,
                     dim=self.batch_size)
 
-                x_hat = self.model.generator((c, z)).detach()
-                c_hat, z_hat = self._detached(*self.model.encoder(x))
-                error_d, _, _ = self.train_discriminator(
-                    *self._generator_encoder_data(c, z, x,
-                                                  c_hat, z_hat, x_hat))
+                iters = 1
+                for _ in range(iters):
+                    x_hat = self.model.generator((c, z)).detach()
+                    c_hat, z_hat = self._detached(*self.model.encoder(x))
+                    error_d, prediction_g, prediction_e = self.train_discriminator(
+                        *self._generator_encoder_data(c, z, x,
+                                                      c_hat, z_hat, x_hat))
+                    loss_d_epoch += error_d
 
-                x_hat = self.model.generator((c, z))
-                c_hat, z_hat = self.model.encoder(x)
-                error_g, error_e = self.train_generator_encoder(
-                    *self._generator_encoder_data(c, z, x,
-                                                  c_hat, z_hat, x_hat))
-                loss_d_epoch += error_d
-                loss_g_epoch += error_g
-                loss_e_epoch += error_e
+                    if log_progress and (i % log_interval == 0):
+                        print("prediction for fake data")
+                        print(prediction_g.view(-1))
+                        print("prediction for true data")
+                        print(prediction_e.view(-1))
+                        self.batch_report(i, epoch, error_d, 'Discriminator')
 
-                if log_progress and (i % log_interval == 0):
-                    self.batch_report(i, epoch, error_d, 'Discriminator')
-                    self.batch_report(i, epoch, error_g, 'Generator')
-                    self.batch_report(i, epoch, error_e, 'Encoder')
+                iters = 5
+                for _ in range(iters):
+                    x_hat = self.model.generator((c, z))
+                    c_hat, z_hat = self.model.encoder(x)
+                    error_g, error_e = self.train_generator_encoder(
+                        *self._generator_encoder_data(c, z, x,
+                                                      c_hat, z_hat, x_hat))
+                    loss_g_epoch += error_g
+                    loss_e_epoch += error_e
+
+                    c, z = config_sample(
+                        latent_gaussian=self.model.reg_gaussian,
+                        categorical_levels=self.model.reg_categorical,
+                        latent_noise=self.model.latent_noise,
+                        dim=self.batch_size)
+
+                    if log_progress and (i % log_interval == 0):
+                        self.batch_report(i, epoch, error_g, 'Generator')
+                        self.batch_report(i, epoch, error_e, 'Encoder')
+
                 if save_images and (i % log_interval == 0):
                     save += 1
                     self._save_images(c_probe, z_probe, save, image_inst)
@@ -316,11 +365,13 @@ class InfoBiGANTrainer(Trainer):
         self.optimiser_d.zero_grad()
 
         prediction_g, q_g = self.model.discriminator(*generator_data)
-        error_g = self.loss(prediction_g, self.target_g)
+        # error_g = self.loss(prediction_g, self.target_g)
+        error_g = self.loss(prediction_g, self.target_e)
         error_g.backward()
 
         prediction_e, q_e = self.model.discriminator(*encoder_data)
-        error_e = self.loss(prediction_e, self.target_e)
+        # error_e = self.loss(prediction_e, self.target_e)
+        error_e = self.loss(prediction_e, self.target_g)
         error_e.backward()
 
         self.optimiser_d.step()
@@ -339,13 +390,13 @@ class InfoBiGANTrainer(Trainer):
         """
         self.optimiser_g.zero_grad()
         prediction_g, q_g = self.model.discriminator(*generator_data)
-        error_g = self.loss(prediction_g, self.target_e)
+        error_g = self.loss(prediction_g, self.target_g)
         error_g.backward()
         self.optimiser_g.step()
 
         self.optimiser_e.zero_grad()
         prediction_e, q_e = self.model.discriminator(*encoder_data)
-        error_e = self.loss(prediction_e, self.target_g)
+        error_e = -self.loss(prediction_e, self.target_g)
         error_e.backward()
         self.optimiser_e.step()
 
