@@ -36,6 +36,7 @@ class DCArchitecture(nn.Module):
                  nonlinearity=('leaky', 'leaky', 'leaky', 'leaky', 'sigmoid'),
                  kernel_size=(4, 4, 4, 4, 1),
                  batch_norm=(False, True, True, True, False),
+                 dropout=(0, 0, 0, 0, 0),
                  stride=(2, 2, 2, 2, 1),
                  padding=(2, 2, 1, 1, 0),
                  bias=(False, False, False, False, True),
@@ -64,6 +65,8 @@ class DCArchitecture(nn.Module):
         batch_norm: bool or tuple
             Indicates whether batch normalisation should be applied to each
             layer.
+        dropout: float or tuple
+            Dropout probability of units in each hidden layer.
         stride: int or tuple
             Convolutional stride.
         padding: int or tuple
@@ -77,10 +80,10 @@ class DCArchitecture(nn.Module):
             is specified.
 
         If any of `hidden`, `nonlinearity`, `kernel_size`, `batch_norm`,
-        `stride`, `padding`, or `bias` is a tuple, it should be 1 shorter than
-        `channels`; in this case, the ith item denotes the parameter value for
-        the ith convolutional layer (mapping the ith index of channels to the
-        (i + 1)th index of channels).
+        `dropout`, `stride`, `padding`, or `bias` is a tuple, it should be 1
+        shorter than `channels`; in this case, the ith item denotes the
+        parameter value for the ith convolutional layer (mapping the ith index
+        of channels to the (i + 1)th index of channels).
         """
         super(DCArchitecture, self).__init__()
         channels = _listify(channels)
@@ -91,6 +94,7 @@ class DCArchitecture(nn.Module):
         kernel_size = _listify(kernel_size, self.n_conv)
         batch_norm = _listify(batch_norm, self.n_conv)
         padding = _listify(padding, self.n_conv)
+        dropout = _listify(dropout, self.n_conv)
         hidden = _listify(hidden, self.n_conv)
         stride = _listify(stride, self.n_conv)
         bias = _listify(bias, self.n_conv)
@@ -129,6 +133,8 @@ class DCArchitecture(nn.Module):
 
             if batch_norm[i]:
                 layer.append(nn.BatchNorm2d(r))
+            if dropout[i] != 0:
+                layer.append(nn.Dropout(dropout[i]))
 
             if nonlinearity[i] == 'leaky':
                 layer.append(nn.LeakyReLU(negative_slope=leak, inplace=True))
@@ -165,6 +171,8 @@ class DCNetwork(DCArchitecture):
                  stride=2,
                  padding=(3, 1, 1, 1),
                  bias=False,
+                 batch_norm=True,
+                 dropout=0.3,
                  leak=0.2,
                  final_act='sigmoid',
                  embedded=(False, False),
@@ -191,6 +199,11 @@ class DCNetwork(DCArchitecture):
         bias: bool or tuple
             Indicates whether each convolutional filter includes bias terms
             for each unit.
+        batch_norm: bool or tuple
+            Indicates whether batch normalisation should be applied to each
+            layer.
+        dropout: float or tuple
+            Dropout probability of units in each hidden layer.
         leak: float
             Slope of the negative part of the hidden layers' leaky ReLU
             activation function.
@@ -230,8 +243,10 @@ class DCNetwork(DCArchitecture):
         stride = _listify(stride, n_conv) + [1] * n_fc
         bias = _listify(bias, n_conv) + [True] * n_fc
         nonlinearity = ['leaky'] * (n_conv + n_fc - 1) + [final_act]
-        batch_norm = ([embedded[0]] + [True] * (n_conv + n_fc - 2)
-                      + [embedded[1]])
+        dropout = [dropout] * (n_conv + n_fc - 1) + [0]
+        if batch_norm:
+            batch_norm = ([embedded[0]] + [True] * (n_conv + n_fc - 2)
+                          + [embedded[1]])
 
         super(DCNetwork, self).__init__(
             channels=channels,
@@ -239,6 +254,7 @@ class DCNetwork(DCArchitecture):
             hidden='conv',
             nonlinearity=nonlinearity,
             batch_norm=batch_norm,
+            dropout=dropout,
             stride=stride,
             padding=padding,
             bias=bias,
@@ -263,6 +279,7 @@ class DCTranspose(DCArchitecture):
                  stride=2,
                  padding=(1, 1, 1, 3),
                  bias=False,
+                 batch_norm=False,
                  final_act='tanh',
                  embedded=(False, False),
                  latent_dim=100,
@@ -326,8 +343,9 @@ class DCTranspose(DCArchitecture):
         nonlinearity = [None] + ['relu'] * (n_conv + n_fc - 2) + [final_act]
         hidden = ['conv'] * n_fc + ['transpose'] * n_conv
         bias = [True] * n_fc + _listify(bias, n_conv) + [False]
-        batch_norm = ([embedded[0]] + [True] * (n_conv + n_fc - 2)
-                      + [embedded[1]])
+        if batch_norm:
+            batch_norm = ([embedded[0]] + [True] * (n_conv + n_fc - 2)
+                          + [embedded[1]])
 
         super(DCTranspose, self).__init__(
             channels=channels,
@@ -335,6 +353,7 @@ class DCTranspose(DCArchitecture):
             hidden=hidden,
             nonlinearity=nonlinearity,
             batch_norm=batch_norm,
+            dropout=0,
             stride=stride,
             padding=padding,
             bias=bias

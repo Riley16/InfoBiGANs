@@ -8,7 +8,6 @@ Trainer class for the InfoBiGAN
 """
 import torch
 from torch import nn, optim
-from .conv import DCTranspose, DCNetwork
 from .utils.utils import thumb_grid, animate_gif
 from .utils.trainer import Trainer
 
