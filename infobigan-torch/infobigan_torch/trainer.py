@@ -8,7 +8,6 @@ Trainer class for the InfoBiGAN
 """
 import torch
 from torch import nn, optim
-from .conv import DCTranspose, DCNetwork
 from .utils.utils import thumb_grid, animate_gif
 from .utils.trainer import Trainer
 
@@ -86,7 +85,7 @@ def categorical(batch_size, levels=(10,), index=None):
 
 
 def config_probe_categorical(categorical_levels=(10,), index=0,
-                             latent_noise=100, latent_gaussian=2):
+                             latent_noise=100, latent_gaussian=2, cuda=False):
     """
     Generate a probe for a categorical variable of choice. The probe samples
     all possible levels of the selected variable while clamping all remaining
@@ -105,6 +104,8 @@ def config_probe_categorical(categorical_levels=(10,), index=0,
         Dimensionality of the latent-space noise variables.
     latent_gaussian: int
         Dimensionality of the regularised latent-space Gaussian variables.
+    cuda: bool
+        Indicates whether the sample should be placed on CUDA.
     """
     c = {}
     probe_dim = categorical_levels[index]
@@ -112,12 +113,14 @@ def config_probe_categorical(categorical_levels=(10,), index=0,
         batch_size='levels', levels=categorical_levels, index=index)
     z = gaussian(1, latent_noise).expand(probe_dim, -1)
     c['gaussian'] = gaussian(1, latent_gaussian).expand(probe_dim, -1)
+    if cuda:
+        c, z = latent_to_cuda(c, z)
     return c, z
 
 
 def config_probe_gaussian(latent_gaussian=2, latent_noise=100,
                           categorical_levels=(10,), index=0,
-                          probe_values=gaussian_probe_default):
+                          probe_values=gaussian_probe_default, cuda=False):
     """Generate a probe for the Gaussian variable of choice. The probe
     samples a range of values of the selected variable while clamping all
     remaining variables.
@@ -137,6 +140,8 @@ def config_probe_gaussian(latent_gaussian=2, latent_noise=100,
         while the remaining variables are clamped.
     probe_values: list
         Specifies the values of the given variable to be probed.
+    cuda: bool
+        Indicates whether the sample should be placed on CUDA.
     """
     c = {}
     probe_dim = len(gaussian_probe_default)
@@ -144,11 +149,13 @@ def config_probe_gaussian(latent_gaussian=2, latent_noise=100,
     c['categorical'] = categorical(batch_size=1, levels=categorical_levels)
     c['categorical'] = [i.expand(probe_dim, -1) for i in c['categorical']]
     c['gaussian'] = gaussian(probe_values, latent_gaussian, index)
+    if cuda:
+        c, z = latent_to_cuda(c, z)
     return c, z
 
 
 def config_sample(latent_gaussian=2, categorical_levels=(10,),
-                  latent_noise=100, dim=16):
+                  latent_noise=100, dim=16, cuda=False):
     """Generate a random sample in the latent space.
 
     Parameters
@@ -163,15 +170,27 @@ def config_sample(latent_gaussian=2, categorical_levels=(10,),
         Dimensionality of the latent-space noise variables.
     dim: int
         Total number of latent-space vectors to include in the sample.
+    cuda: bool
+        Indicates whether the sample should be placed on CUDA.
     """
     c = {}
     z = gaussian(dim, latent_noise)
     c['categorical'] = categorical(dim, categorical_levels)
     c['gaussian'] = gaussian(dim, latent_gaussian)
+    if cuda:
+        c, z = latent_to_cuda(c, z)
     return c, z
 
 
-def config_infobigan_loss(batch_size):
+def latent_to_cuda(c, z):
+    """Move the latent variables to CUDA."""
+    return {
+        'categorical': [i.cuda() for i in c['categorical']],
+        'gaussian': c['gaussian'].cuda()
+    }, z.cuda()
+
+
+def config_infobigan_loss(batch_size, cuda=False):
     """
     Configure the loss functions for the InfoBiGAN.
 
@@ -182,6 +201,8 @@ def config_infobigan_loss(batch_size):
     ----------
     batch_size: int
         Number of observations per batch.
+    cuda: bool
+        Indicates whether the sample should be placed on CUDA.
 
     Returns
     -------
@@ -201,6 +222,9 @@ def config_infobigan_loss(batch_size):
     loss = nn.BCELoss()
     generator_target = torch.ones(batch_size, 1, 1, 1)
     encoder_target = torch.zeros(batch_size, 1, 1, 1)
+    if cuda:
+        generator_target = generator_target.cuda()
+        encoder_target = encoder_target.cuda()
     return loss, generator_target, encoder_target
 
 
@@ -226,15 +250,18 @@ class InfoBiGANTrainer(Trainer):
     data_dim: int
         Dimensionality of the input dataset. Extended to three dimensions
         (width, height, channels) to enable conversion to image.
+    cuda: bool
+        Indicates whether the model should be trained on CUDA.
     """
     def __init__(self,
                  loader,
                  model,
                  batch_size=100,
                  learning_rate=0.0002,
-                 max_epoch=20):
+                 max_epoch=20,
+                 cuda=False):
         super(InfoBiGANTrainer, self).__init__(loader, model, batch_size,
-                                               learning_rate, max_epoch)
+                                               learning_rate, max_epoch, cuda)
 
         self.optimiser_d = optim.Adam(self.model.discriminator.parameters(),
                                       lr=self.learning_rate/2)
@@ -244,7 +271,8 @@ class InfoBiGANTrainer(Trainer):
                                       lr=self.learning_rate)
         (self.loss,
          self.target_g,
-         self.target_e) = config_infobigan_loss(self.batch_size)
+         self.target_e) = config_infobigan_loss(self.batch_size,
+                                                cuda=self.cuda)
 
     def train(self, log_progress=True, save_images=True,
               log_interval=100, img_prefix='infobigan'):
@@ -259,7 +287,8 @@ class InfoBiGANTrainer(Trainer):
             latent_gaussian=self.model.reg_gaussian,
             categorical_levels=self.model.reg_categorical,
             latent_noise=self.model.latent_noise,
-            dim=16)
+            dim=16,
+            cuda=self.cuda)
         if save_images:
             save = -1
             image_inst = '{}'.format(img_prefix) + '_{epoch:03d}.png'
@@ -273,11 +302,13 @@ class InfoBiGANTrainer(Trainer):
             loss_e_epoch = 0
             self.make_smooth_targets(epoch + 1)
             for i, (x, _) in enumerate(self.loader):
+                if self.cuda: x = x.cuda()
                 c, z =  config_sample(
                     latent_gaussian=self.model.reg_gaussian,
                     categorical_levels=self.model.reg_categorical,
                     latent_noise=self.model.latent_noise,
-                    dim=self.batch_size)
+                    dim=self.batch_size,
+                    cuda=self.cuda)
 
                 x_hat = self.model.generator((c, z)).detach()
                 c_hat, z_hat = self._detached(*self.model.encoder(x))
@@ -365,6 +396,9 @@ class InfoBiGANTrainer(Trainer):
                  * (1 - label_flip))
         self.target_gd = torch.ones(self.batch_size, 1, 1, 1)
         self.target_ed = label_flip + noise
+        if self.cuda:
+            self.target_gd = self.target_gd.cuda()
+            self.target_ed = self.target_ed.cuda()
 
     def _detached(self, c, z):
         return {
@@ -409,5 +443,5 @@ class InfoBiGANTrainer(Trainer):
     def _save_images(self, c_probe, z_probe, save, image_fmt):
         """Save thumbnails of images generated during training."""
         probe_gen = self.model.generator((c_probe, z_probe))
-        thumb_grid(probe_gen, save=True,
+        thumb_grid(probe_gen, save=True, cuda=self.cuda,
                    file=image_fmt.format(epoch=save + 1))

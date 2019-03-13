@@ -27,19 +27,26 @@ class Trainer(object):
     data_dim: int
         Dimensionality of the input dataset. Extended to three dimensions
         (width, height, channels) to enable conversion to image.
+    cuda: bool
+        Indicates whether the model should be trained on CUDA.
     """
     def __init__(self,
                  loader,
                  model,
                  batch_size,
                  learning_rate,
-                 max_epoch):
+                 max_epoch,
+                 cuda=False):
 
         self.loader = loader
         self.model = model
         self.batch_size = batch_size
         self.learning_rate = learning_rate
         self.max_epoch = max_epoch
+        self.cuda = cuda
+
+        if self.cuda and torch.cuda.is_available():
+            self.model.cuda()
 
         self.n_features = loader.dataset.train_data[0].nelement()
         data_dim = list(loader.dataset.train_data[0].shape)

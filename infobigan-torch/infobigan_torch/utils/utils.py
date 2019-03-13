@@ -28,7 +28,7 @@ def _listify(item, length=False):
 
 
 def thumb_grid(im_batch, grid_dim=(4, 4), im_dim=(6, 6),
-               save=False, file='example.png'):
+               save=False, file='example.png', cuda=False):
     """Generate a grid of image thumbnails.
 
     Parameters
@@ -48,8 +48,11 @@ def thumb_grid(im_batch, grid_dim=(4, 4), im_dim=(6, 6),
     fig = plt.figure(1, im_dim)
     grid = ImageGrid(fig, 111, nrows_ncols=grid_dim, axes_pad=0.05)
     for i in range(im_batch.size(0)):
-        grid[i].imshow(
-            im_batch[i, :, :, :].detach().numpy().squeeze(), cmap='bone')
+        if cuda:
+            img = im_batch[i, :, :, :].detach().cpu().numpy().squeeze()
+        else:
+            img = im_batch[i, :, :, :].detach().numpy().squeeze()
+        grid[i].imshow(img, cmap='bone')
         grid[i].axes.get_xaxis().set_visible(False)
         grid[i].axes.get_yaxis().set_visible(False)
     if save:

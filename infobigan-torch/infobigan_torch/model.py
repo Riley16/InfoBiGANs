@@ -119,7 +119,8 @@ class InfoBiGAN(object):
         self.generator = RegularisedGenerator(
             channels=channels[::-1], kernel_size=kernel_size[::-1],
             stride=stride[::-1], padding=padding[::-1], bias=bias[::-1],
-            latent_dim=self.latent_dim, target_dim=manifest_dim)
+            latent_dim=self.latent_dim, target_dim=manifest_dim,
+            batch_norm=False)
 
     def train(self):
         self.discriminator.train()
@@ -130,6 +131,11 @@ class InfoBiGAN(object):
         self.discriminator.eval()
         self.generator.eval()
         self.encoder.eval()
+
+    def cuda(self):
+        self.discriminator.cuda()
+        self.generator.cuda()
+        self.encoder.cuda()
 
     def load_state_dict(self, params_g, params_e, params_d):
         self.encoder.load_state_dict(params_e)
@@ -199,15 +205,17 @@ class DualDiscriminator(nn.Module):
         self.x_discriminator = DCNetwork(
             channels=channels, kernel_size=kernel_size, stride=stride,
             padding=padding, bias=bias, in_dim=manifest_dim,
-            out_dim=latent_dim*2, final_act='leaky', embedded=(False, True))
+            out_dim=latent_dim*2, final_act='leaky', batch_norm=False,
+            dropout=0.3, embedded=(False, True))
         self.z_discriminator = DCNetwork(
             channels=(latent_dim,), fc=(latent_dim*2, latent_dim*2),
             kernel_size=1, stride=1, padding=0, bias=True, in_dim=1,
-            out_dim=latent_dim*2, final_act='leaky', embedded=(False, True))
+            out_dim=latent_dim*2, final_act='leaky', batch_norm=False,
+            dropout=0.3, embedded=(False, True))
         self.zx_discriminator = DCNetwork(
             channels=(latent_dim*4,), fc=(latent_dim*4, latent_dim*4),
             kernel_size=1, stride=1, padding=0, bias=True, in_dim=1,
-            out_dim=1, embedded=(True, False))
+            out_dim=1, batch_norm=False, dropout=0.3, embedded=(True, False))
         self.regulariser = QStack(
             reg_categorical=reg_categorical, reg_gaussian=reg_gaussian,
             hidden_dim=latent_dim*2)
@@ -298,7 +306,8 @@ class RegularisedEncoder(nn.Module):
         self.conv = DCNetwork(
             channels=channels, kernel_size=kernel_size, stride=stride,
             padding=padding, bias=bias, in_dim=manifest_dim,
-            out_dim=hidden_dim, final_act='leaky', embedded=(False, True))
+            out_dim=hidden_dim, final_act='leaky', batch_norm=False,
+            dropout=0.3, embedded=(False, True))
         self.code = nn.ModuleDict()
 
         self.code['z'] = nn.Conv2d(
@@ -375,7 +384,8 @@ class QStack(nn.Module):
             leak=0.2,
             final_act='leaky',
             in_dim=1,
-            out_dim=hidden_dim
+            out_dim=hidden_dim,
+            batch_norm=False
         )
         self.q_regularised['categorical'] = nn.ModuleList()
         for levels in reg_categorical:
