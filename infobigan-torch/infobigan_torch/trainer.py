@@ -269,6 +269,9 @@ class InfoBiGANTrainer(Trainer):
                                       lr=self.learning_rate)
         self.optimiser_e = optim.Adam(self.model.encoder.parameters(),
                                       lr=self.learning_rate)
+        self.optimiser_q = optim.Adam(self.model.discriminator.regulariser.parameters(),
+                                      lr=self.learning_rate)
+
         (self.loss,
          self.target_g,
          self.target_e) = config_infobigan_loss(self.batch_size,
@@ -314,13 +317,13 @@ class InfoBiGANTrainer(Trainer):
                 c_hat, z_hat = self._detached(*self.model.encoder(x))
                 error_d, _, _ = self.train_discriminator(
                     *self._generator_encoder_data(c, z, x,
-                                                  c_hat, z_hat, x_hat))
+                                                  c_hat, z_hat, x_hat), c)
 
                 x_hat = self.model.generator((c, z))
                 c_hat, z_hat = self.model.encoder(x)
                 error_g, error_e = self.train_generator_encoder(
                     *self._generator_encoder_data(c, z, x,
-                                                  c_hat, z_hat, x_hat))
+                                                  c_hat, z_hat, x_hat), c)
                 loss_d_epoch += error_d
                 loss_g_epoch += error_g
                 loss_e_epoch += error_e
@@ -333,7 +336,7 @@ class InfoBiGANTrainer(Trainer):
                     save += 1
                     self._save_images(c_probe, z_probe, save, image_inst)
 
-    def train_discriminator(self, generator_data, encoder_data):
+    def train_discriminator(self, generator_data, encoder_data, c):
         """Evaluate the error of the InfoBiGAN's discriminator network for a
         single mini-batch of generator- and encoder-processed data.
 
@@ -355,9 +358,24 @@ class InfoBiGANTrainer(Trainer):
         error_e.backward()
 
         self.optimiser_d.step()
+
+        m = c["gaussian"]
+        hat_m = q_g["gaussian"]["mean"]
+        hat_log_std = q_g["gaussian"]["mean"]
+
+        cont_loss = (((m-hat_m)/torch.exp(hat_log_std))**2-hat_log_std).sum(1).mean()
+        
+        CEloss = torch.nn.CrossEntropyLoss()
+        hat_class = q_g["categorical"][0]
+        disc_loss = CEloss(hat_class, c["categorical"][0].argmax(1))
+
+        q_loss = cont_loss + disc_loss
+        q_loss.backward()
+        self.optimiser_q.step()
+
         return error_g + error_e, prediction_g, prediction_e
 
-    def train_generator_encoder(self, generator_data, encoder_data):
+    def train_generator_encoder(self, generator_data, encoder_data, c):
         """Evaluate the error of the InfoBiGAN's generator and encoder
         networks for a single mini-batch of fabricated data.
 
@@ -370,7 +388,21 @@ class InfoBiGANTrainer(Trainer):
         """
         self.optimiser_g.zero_grad()
         prediction_g, q_g = self.model.discriminator(*generator_data)
+
+        m = c["gaussian"]
+        hat_m = q_g["gaussian"]["mean"]
+        hat_log_std = q_g["gaussian"]["mean"]
+
+        cont_loss = (((m-hat_m)/torch.exp(hat_log_std))**2-hat_log_std).sum(1).mean()
+        
+        CEloss = torch.nn.CrossEntropyLoss()
+        hat_class = q_g["categorical"][0]
+        disc_loss = CEloss(hat_class, c["categorical"][0].argmax(1))
+
+
         error_g = self.loss(prediction_g, self.target_e)
+
+        g_loss = error_g + cont_loss + disc_loss
         error_g.backward()
         self.optimiser_g.step()
 
