@@ -121,26 +121,39 @@ class InfoBiGAN(object):
             stride=stride[::-1], padding=padding[::-1], bias=bias[::-1],
             latent_dim=self.latent_dim, target_dim=manifest_dim,
             batch_norm=False)
+        self.regulariser = QStack(
+            reg_categorical=reg_categorical, reg_gaussian=reg_gaussian,
+            hidden_dim=self.latent_dim*2)
 
     def train(self):
         self.discriminator.train()
         self.generator.train()
         self.encoder.train()
+        self.regulariser.train()
 
     def eval(self):
         self.discriminator.eval()
         self.generator.eval()
         self.encoder.eval()
+        self.regulariser.eval()
 
     def cuda(self):
         self.discriminator.cuda()
         self.generator.cuda()
         self.encoder.cuda()
+        self.regulariser.cuda()
 
-    def load_state_dict(self, params_g, params_e, params_d):
+    def zero_grad(self):
+        self.discriminator.zero_grad()
+        self.generator.zero_grad()
+        self.encoder.zero_grad()
+        self.regulariser.zero_grad()
+
+    def load_state_dict(self, params_g, params_e, params_d, params_q):
         self.encoder.load_state_dict(params_e)
         self.generator.load_state_dict(params_g)
-        self.discriminator.load_state_dict(params_d=params_d)
+        self.discriminator.load_state_dict(params_d)
+        self.regulariser.load_state_dict(params_q)
 
 
 class DualDiscriminator(nn.Module):
@@ -216,9 +229,6 @@ class DualDiscriminator(nn.Module):
             channels=(latent_dim*4,), fc=(latent_dim*4, latent_dim*4),
             kernel_size=1, stride=1, padding=0, bias=True, in_dim=1,
             out_dim=1, batch_norm=False, dropout=0.3, embedded=(True, False))
-        self.regulariser = QStack(
-            reg_categorical=reg_categorical, reg_gaussian=reg_gaussian,
-            hidden_dim=latent_dim*2)
 
     def forward(self, z, x):
         if isinstance(z, tuple):
@@ -228,8 +238,7 @@ class DualDiscriminator(nn.Module):
         x = self.x_discriminator(x)
         zx = torch.cat([z, x], 1) + eps
         zx = self.zx_discriminator(zx)
-        q = self.regulariser(x)
-        return zx, q
+        return zx, x
 
 
 class RegularisedGenerator(DCTranspose):
