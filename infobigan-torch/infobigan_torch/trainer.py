@@ -367,7 +367,7 @@ class InfoBiGANTrainer(Trainer):
         hat_m = q_g["gaussian"]["mean"]
         hat_log_std = q_g["gaussian"]["mean"]
 
-        cont_loss = (((m-hat_m)/torch.exp(hat_log_std))**2-hat_log_std).sum(1).mean()
+        cont_loss = (((m-hat_m)/torch.exp(hat_log_std))**2 + hat_log_std).sum(1).mean()
 
         CEloss = torch.nn.CrossEntropyLoss()
         hat_class = q_g["categorical"][0].squeeze()
@@ -398,7 +398,7 @@ class InfoBiGANTrainer(Trainer):
         hat_m = q_g["gaussian"]["mean"]
         hat_log_std = q_g["gaussian"]["mean"]
 
-        cont_loss = (((m-hat_m)/torch.exp(hat_log_std))**2-hat_log_std).sum(1).mean()
+        cont_loss = (((m-hat_m)/torch.exp(hat_log_std))**2 + hat_log_std).sum(1).mean()
         
         CEloss = torch.nn.CrossEntropyLoss()
         hat_class = q_g["categorical"][0].squeeze()
