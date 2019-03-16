@@ -264,12 +264,12 @@ class InfoBiGANTrainer(Trainer):
                                                learning_rate, max_epoch, cuda)
 
         self.optimiser_d = optim.Adam(self.model.discriminator.parameters(),
-                                      lr=self.learning_rate/2)
+                                      lr=self.learning_rate)
         self.optimiser_g = optim.Adam(self.model.generator.parameters(),
                                       lr=self.learning_rate)
         self.optimiser_e = optim.Adam(self.model.encoder.parameters(),
                                       lr=self.learning_rate)
-        self.optimiser_q = optim.Adam(self.model.discriminator.regulariser.parameters(),
+        self.optimiser_q = optim.Adam(self.model.regulariser.parameters(),
                                       lr=self.learning_rate)
 
         (self.loss,
@@ -359,14 +359,18 @@ class InfoBiGANTrainer(Trainer):
 
         self.optimiser_d.step()
 
+        self.optimiser_q.zero_grad()
+        self.optimiser_d.zero_grad()
+        prediction_g, q_g = self.model.discriminator(*generator_data)
+        q_g = self.model.regulariser(q_g)
         m = c["gaussian"]
         hat_m = q_g["gaussian"]["mean"]
         hat_log_std = q_g["gaussian"]["mean"]
 
-        cont_loss = (((m-hat_m)/torch.exp(hat_log_std))**2-hat_log_std).sum(1).mean()
-        
+        cont_loss = (((m-hat_m)/torch.exp(hat_log_std))**2 + hat_log_std).sum(1).mean()
+
         CEloss = torch.nn.CrossEntropyLoss()
-        hat_class = q_g["categorical"][0]
+        hat_class = q_g["categorical"][0].squeeze()
         disc_loss = CEloss(hat_class, c["categorical"][0].argmax(1))
 
         q_loss = cont_loss + disc_loss
@@ -388,17 +392,17 @@ class InfoBiGANTrainer(Trainer):
         """
         self.optimiser_g.zero_grad()
         prediction_g, q_g = self.model.discriminator(*generator_data)
+        q_g = self.model.regulariser(q_g)
 
         m = c["gaussian"]
         hat_m = q_g["gaussian"]["mean"]
         hat_log_std = q_g["gaussian"]["mean"]
 
-        cont_loss = (((m-hat_m)/torch.exp(hat_log_std))**2-hat_log_std).sum(1).mean()
+        cont_loss = (((m-hat_m)/torch.exp(hat_log_std))**2 + hat_log_std).sum(1).mean()
         
         CEloss = torch.nn.CrossEntropyLoss()
-        hat_class = q_g["categorical"][0]
+        hat_class = q_g["categorical"][0].squeeze()
         disc_loss = CEloss(hat_class, c["categorical"][0].argmax(1))
-
 
         error_g = self.loss(prediction_g, self.target_e)
 
@@ -407,7 +411,7 @@ class InfoBiGANTrainer(Trainer):
         self.optimiser_g.step()
 
         self.optimiser_e.zero_grad()
-        prediction_e, q_e = self.model.discriminator(*encoder_data)
+        prediction_e, _ = self.model.discriminator(*encoder_data)
         error_e = self.loss(prediction_e, self.target_g)
         error_e.backward()
         self.optimiser_e.step()
@@ -437,6 +441,12 @@ class InfoBiGANTrainer(Trainer):
             'categorical': [i.detach() for i in c['categorical']],
             'gaussian': c['gaussian'].detach()
         }, z.detach()
+
+    def _detached_data_wrapper(data_wrapper):
+        return (
+            self._detached(data_wrapper[0]),
+            data_wrapper[1].detach()
+        )
 
     def _generator_encoder_data(self, c, z, x, c_hat, z_hat, x_hat):
         generator_data = (
